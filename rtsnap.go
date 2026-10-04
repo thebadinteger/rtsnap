@@ -15,6 +15,20 @@ import (
 	"github.com/thebadinteger/rtsnap/pkg/rtsp"
 )
 
+// upper bound of decoded frame size
+const maxFramePixels = 7680 * 4320
+
+// run decode and convert panic to error
+func safely[T any](fn func() (T, error)) (out T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("decode panic: %v", r)
+		}
+	}()
+	return fn()
+}
+
+// capture single frame from rtsp stream
 func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image, error) {
 	ctx, client, o, cancel, err := connect(ctx, rtspURL, opts...)
 	if err != nil {
@@ -40,6 +54,7 @@ func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image,
 	}
 }
 
+// capture single frame as jpeg bytes
 func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error) {
 	ctx, client, o, cancel, err := connect(ctx, rtspURL, opts...)
 	if err != nil {
@@ -86,6 +101,7 @@ func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Opti
 	return buf.Bytes(), nil
 }
 
+// short video track description
 type TrackInfo struct {
 	Codec       Codec
 	PayloadType uint8
@@ -93,11 +109,13 @@ type TrackInfo struct {
 	Control     string
 }
 
+// stream description without playback
 type StreamInfo struct {
 	URL    string
 	Tracks []TrackInfo
 }
 
+// open connection and read stream description
 func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Context, *rtsp.Client, Options, context.CancelFunc, error) {
 	o := Options{
 		Timeout: 10 * time.Second,
@@ -128,6 +146,7 @@ func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Conte
 	return ctx, client, o, cancel, nil
 }
 
+// select track and start playback
 func playTrack(ctx context.Context, client *rtsp.Client, codec Codec) error {
 	track, err := client.SelectTrack(string(codec))
 	if err != nil {
@@ -142,6 +161,7 @@ func playTrack(ctx context.Context, client *rtsp.Client, codec Codec) error {
 	return client.Play(ctx)
 }
 
+// list video tracks without playback
 func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error) {
 	_, client, _, cancel, err := connect(ctx, rtspURL, opts...)
 	if err != nil {
@@ -165,6 +185,7 @@ func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, er
 	return info, nil
 }
 
+// read mjpeg packets until full frame
 func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error) {
 	depack := rtp.NewMJPEGDepacketizer()
 	dec := mjpeg.NewDecoder()
@@ -193,6 +214,7 @@ func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error)
 	}
 }
 
+// read mjpeg packets and return raw bytes
 func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
 	depack := rtp.NewMJPEGDepacketizer()
 
@@ -222,10 +244,12 @@ func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
 	}
 }
 
+// read h264 packets until first decodable frame
 func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Image, error) {
 	depack := rtp.NewH264Depacketizer()
 	dec := h264.New()
 	dec.SkipDeblock = fast
+	dec.FrameSizeLimit(maxFramePixels)
 	if len(client.Track.SPS) > 0 {
 		_, _ = dec.DecodeNALUs(client.Track.SPS)
 	}
@@ -255,7 +279,7 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			continue
 		}
 
-		f, err := dec.DecodeNALUs(nalus)
+		f, err := safely(func() (*h264.Frame, error) { return dec.DecodeNALUs(nalus) })
 		if err == nil && f != nil {
 			img := f.Image()
 			if img != nil {
@@ -265,25 +289,31 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	}
 }
 
+// read h265 packets until first decodable frame
 func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Image, error) {
 	depack := rtp.NewH265Depacketizer()
 	var dec h265.Decoder
-	dec.SkipLoop = fast
-	for _, vps := range client.Track.VPS {
-		if u, ok := h265.ParseNAL(vps); ok {
-			_, _ = dec.DecodeNAL(u)
+	reset := func() {
+		dec = h265.Decoder{}
+		dec.SkipLoop = fast
+		dec.FrameSizeLimit(maxFramePixels)
+		for _, vps := range client.Track.VPS {
+			if u, ok := h265.ParseNAL(vps); ok {
+				_, _ = safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
+			}
+		}
+		for _, sps := range client.Track.SPS {
+			if u, ok := h265.ParseNAL(sps); ok {
+				_, _ = safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
+			}
+		}
+		for _, pps := range client.Track.PPS {
+			if u, ok := h265.ParseNAL(pps); ok {
+				_, _ = safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
+			}
 		}
 	}
-	for _, sps := range client.Track.SPS {
-		if u, ok := h265.ParseNAL(sps); ok {
-			_, _ = dec.DecodeNAL(u)
-		}
-	}
-	for _, pps := range client.Track.PPS {
-		if u, ok := h265.ParseNAL(pps); ok {
-			_, _ = dec.DecodeNAL(u)
-		}
-	}
+	reset()
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -310,18 +340,21 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 				continue
 			}
 
-			pics, err := dec.DecodeNAL(u)
-			if err == nil {
-				for _, p := range pics {
-					if img := p.Image(); img != nil {
-						return img, nil
-					}
+			pics, err := safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
+			if err != nil {
+				reset()
+				continue
+			}
+			for _, p := range pics {
+				if img := p.Image(); img != nil {
+					return img, nil
 				}
 			}
 
 			// check if picture is ready after intra random access point
 			if u.Type.IsIRAP() {
-				for _, p := range dec.Flush() {
+				flush, _ := safely(func() ([]*h265.Picture, error) { return dec.Flush(), nil })
+				for _, p := range flush {
 					if img := p.Image(); img != nil {
 						return img, nil
 					}

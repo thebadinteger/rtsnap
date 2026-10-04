@@ -1,5 +1,6 @@
 package rtsp
 
+// rtp transport selector
 type Transport string
 
 const (

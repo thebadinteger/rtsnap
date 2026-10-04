@@ -5,6 +5,8 @@ import (
 	"fmt"
 )
 
+const maxAssembledBytes = 64 << 20
+
 type Packet struct {
 	Version        uint8
 	Padding        bool
@@ -17,6 +19,7 @@ type Packet struct {
 	Payload        []byte
 }
 
+// parse raw bytes into rtp packet
 func (p *Packet) Unmarshal(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("rtp packet too short: %d bytes", len(data))

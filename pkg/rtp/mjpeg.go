@@ -124,12 +124,22 @@ type MJPEGDepacketizer struct {
 	hasFirstPacket bool
 	lastSeq        uint16
 	hasSeq         bool
+	MaxBytes       int
 }
 
+func (d *MJPEGDepacketizer) maxBytes() int {
+	if d.MaxBytes > 0 {
+		return d.MaxBytes
+	}
+	return maxAssembledBytes
+}
+
+// fresh mjpeg depacketizer state
 func NewMJPEGDepacketizer() *MJPEGDepacketizer {
 	return &MJPEGDepacketizer{}
 }
 
+// reassemble jpeg frame from rtp packet
 func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	buf := pkt.Payload
 	if len(buf) < 8 {
@@ -202,6 +212,12 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 			d.fragmentsLen = 0
 			d.hasFirstPacket = false
 			return nil, nil
+		}
+		if d.fragmentsLen+len(buf) > d.maxBytes() {
+			d.fragments = d.fragments[:0]
+			d.fragmentsLen = 0
+			d.hasFirstPacket = false
+			return nil, fmt.Errorf("mjpeg frame too large")
 		}
 		f := make([]byte, len(buf))
 		copy(f, buf)

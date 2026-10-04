@@ -12,12 +12,23 @@ type H265Depacketizer struct {
 	hdr1      uint8
 	lastSeq   uint16
 	hasSeq    bool
+	fragBytes int
+	MaxBytes  int
 }
 
+func (d *H265Depacketizer) maxBytes() int {
+	if d.MaxBytes > 0 {
+		return d.MaxBytes
+	}
+	return maxAssembledBytes
+}
+
+// fresh h265 depacketizer state
 func NewH265Depacketizer() *H265Depacketizer {
 	return &H265Depacketizer{}
 }
 
+// reassemble nal units from rtp packet
 func (d *H265Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 	if len(pkt.Payload) < 2 {
 		return nil, nil
@@ -73,13 +84,18 @@ func (d *H265Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 			d.naluType = subType
 			d.hdr0 = (pkt.Payload[0] & 0x81) | (subType << 1)
 			d.hdr1 = pkt.Payload[1]
-			d.fragments = append(d.fragments, pkt.Payload[3:])
-		} else {
-			if len(d.fragments) == 0 {
-				return nil, nil
-			}
-			d.fragments = append(d.fragments, pkt.Payload[3:])
+			d.fragBytes = 0
 		}
+		if len(d.fragments) == 0 && !start {
+			return nil, nil
+		}
+		if d.fragBytes+len(pkt.Payload)-3 > d.maxBytes() {
+			d.fragments = d.fragments[:0]
+			d.fragBytes = 0
+			return nil, fmt.Errorf("fu frame too large")
+		}
+		d.fragments = append(d.fragments, pkt.Payload[3:])
+		d.fragBytes += len(pkt.Payload) - 3
 
 		if end {
 			totalSize := 2

@@ -68,6 +68,7 @@ func parseAuthHeader(header string) map[string]string {
 	return params
 }
 
+// build auth from server challenge
 func NewAuth(wwwAuth, username, password string) *Auth {
 	params := parseAuthHeader(wwwAuth)
 	scheme := params["_scheme"]
@@ -106,6 +107,7 @@ func randomCnonce() string {
 	return hex.EncodeToString(b[:])
 }
 
+// render auth header value
 func (a *Auth) Generate(method, uri string) string {
 	if a.Method == "basic" {
 		creds := a.Username + ":" + a.Password

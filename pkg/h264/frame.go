@@ -110,6 +110,7 @@ func (f *Frame) YUV420Bytes() []byte {
 	return result
 }
 
+// expose frame as standard image
 func (f *Frame) Image() image.Image {
 	return f.YCbCr()
 }

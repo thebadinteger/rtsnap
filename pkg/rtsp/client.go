@@ -32,6 +32,7 @@ type Client struct {
 	udpBuf     []byte
 }
 
+// open tcp connection to rtsp server
 func Dial(ctx context.Context, rtspURL string, user, pass string) (*Client, error) {
 	u, err := url.Parse(rtspURL)
 	if err != nil {
@@ -127,6 +128,7 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 	return res, err
 }
 
+// send request with auth retry on 401
 func (c *Client) roundTrip(ctx context.Context, req *Request) (*Response, error) {
 	res, err := c.send(ctx, req)
 	if err != nil {
@@ -138,6 +140,7 @@ func (c *Client) roundTrip(ctx context.Context, req *Request) (*Response, error)
 	return res, nil
 }
 
+// rebuild request with credentials once
 func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) (*Response, error) {
 	if c.auth != nil {
 		return unauth, nil
@@ -153,6 +156,7 @@ func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) 
 	return c.send(ctx, req)
 }
 
+// fetch stream description
 func (c *Client) Describe(ctx context.Context) error {
 	req := &Request{
 		Method: "DESCRIBE",
@@ -180,6 +184,7 @@ func (c *Client) Describe(ctx context.Context) error {
 	return nil
 }
 
+// negotiate transport with fallback
 func (c *Client) Setup(ctx context.Context) error {
 	if c.Track == nil {
 		return fmt.Errorf("no track available for setup")
@@ -214,6 +219,7 @@ func (c *Client) storeSession(res *Response) {
 	c.session = strings.TrimSpace(sess)
 }
 
+// open adjacent udp port pair
 func listenPair() (net.PacketConn, net.PacketConn, int, int, error) {
 	for range 16 {
 		a, err := net.ListenPacket("udp", ":0")
@@ -264,6 +270,7 @@ func udpServerPort(trans string) int {
 	return 0
 }
 
+// negotiate udp unicast transport
 func (c *Client) setupUDP(ctx context.Context) error {
 	rtpConn, rtcpConn, rtpPort, rtcpPort, err := listenPair()
 	if err != nil {
@@ -302,6 +309,7 @@ func (c *Client) setupUDP(ctx context.Context) error {
 	return nil
 }
 
+// negotiate tcp interleaved transport
 func (c *Client) setupTCP(ctx context.Context) error {
 	req := &Request{
 		Method: "SETUP",
@@ -339,6 +347,7 @@ func (c *Client) setupTCP(ctx context.Context) error {
 	return nil
 }
 
+// start stream playback
 func (c *Client) Play(ctx context.Context) error {
 	req := &Request{
 		Method: "PLAY",
@@ -358,6 +367,7 @@ func (c *Client) Play(ctx context.Context) error {
 	return nil
 }
 
+// read next interleaved frame
 func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 	if c.udp {
 		return c.readUDP(ctx)
@@ -408,6 +418,7 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 	}
 }
 
+// read next udp datagram
 func (c *Client) readUDP(ctx context.Context) (*Frame, error) {
 	if d, ok := ctx.Deadline(); ok {
 		_ = c.udpRTP.SetReadDeadline(d)
@@ -446,6 +457,7 @@ func (c *Client) readUDP(ctx context.Context) (*Frame, error) {
 	}
 }
 
+// stop playback on server
 func (c *Client) Teardown(ctx context.Context) error {
 	if c.session == "" {
 		return nil
@@ -458,10 +470,12 @@ func (c *Client) Teardown(ctx context.Context) error {
 	return nil
 }
 
+// active rtp channel number
 func (c *Client) RTPChannel() int {
 	return c.rtpChannel
 }
 
+// close all connections
 func (c *Client) Close() error {
 	if c.udpRTP != nil {
 		_ = c.udpRTP.Close()
@@ -475,6 +489,7 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// pick video track by codec
 func (c *Client) SelectTrack(codec string) (*MediaTrack, error) {
 	t, err := SelectTrack(c.Tracks, codec)
 	if err != nil {
@@ -484,6 +499,7 @@ func (c *Client) SelectTrack(codec string) (*MediaTrack, error) {
 	return t, nil
 }
 
+// list codecs present in stream
 func (c *Client) AvailableCodecs() []string {
 	var res []string
 	seen := make(map[string]bool)

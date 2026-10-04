@@ -168,6 +168,9 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 		sps.OffsetForNonRefPic = reader.ReadExpGolomb()
 		sps.OffsetForTopToBottomField = reader.ReadExpGolomb()
 		numRefFramesInPicOrderCntCycle := reader.ReadExpGolomb()
+		if numRefFramesInPicOrderCntCycle > 255 {
+			return nil, fmt.Errorf("invalid num_ref_frames_in_pic_order_cnt_cycle: %d", numRefFramesInPicOrderCntCycle)
+		}
 		sps.RefFramesInPicOrderCntCycle = make([]uint, numRefFramesInPicOrderCntCycle)
 		for i := 0; i < int(numRefFramesInPicOrderCntCycle); i++ {
 			sps.RefFramesInPicOrderCntCycle[i] = reader.ReadExpGolomb()
@@ -220,6 +223,10 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 
 		sps.Width -= frameCropWidth * cropUnitX
 		sps.Height -= frameCropHeight * cropUnitY
+	}
+
+	if sps.Width == 0 || sps.Height == 0 || sps.Width > 16384 || sps.Height > 16384 {
+		return nil, fmt.Errorf("invalid picture size %dx%d", sps.Width, sps.Height)
 	}
 
 	vuiParametersPresentFlag := reader.ReadFlag()

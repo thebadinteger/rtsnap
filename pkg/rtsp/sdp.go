@@ -45,6 +45,7 @@ func decodeParam(p string) ([]byte, bool) {
 	return nil, false
 }
 
+// normalize endings and unfold lines
 func splitSDPLines(sdp []byte) []string {
 	text := strings.ReplaceAll(string(sdp), "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -81,6 +82,7 @@ type sdpSection struct {
 	fmtp     map[uint8]map[string]string
 }
 
+// extract video tracks from sdp
 func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 	lines := splitSDPLines(sdp)
 	var sections []sdpSection
@@ -249,6 +251,7 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 	return tracks, nil
 }
 
+// pick best matching track
 func SelectTrack(tracks []*MediaTrack, codec string) (*MediaTrack, error) {
 	if len(tracks) == 0 {
 		return nil, fmt.Errorf("no video tracks available")

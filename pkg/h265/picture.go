@@ -33,6 +33,7 @@ type Picture struct {
 	refs int32
 }
 
+// return planes back to pool
 func (p *Picture) Release() {
 	p.release()
 }
@@ -248,6 +249,7 @@ func (p *Picture) colIndex(x, y int) int {
 	return (y>>4)*p.ColW + x>>4
 }
 
+// expose picture as standard image
 func (p *Picture) Image() image.Image {
 	w := p.CropW
 	if w <= 0 {

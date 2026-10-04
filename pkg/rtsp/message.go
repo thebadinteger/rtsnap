@@ -21,6 +21,7 @@ type Request struct {
 	Body    []byte
 }
 
+// serialize request to wire
 func (r *Request) Write(w io.Writer) error {
 	var b bytes.Buffer
 	b.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Method, r.URI, rtspProto))
@@ -57,6 +58,7 @@ func (r *Response) Header(key string) string {
 	return ""
 }
 
+// parse status line and headers
 func readResponse(br *bufio.Reader) (*Response, error) {
 	line, err := br.ReadString('\n')
 	if err != nil {
@@ -121,6 +123,7 @@ type Frame struct {
 	Payload []byte
 }
 
+// parse interleaved dollar frame
 func readFrame(br *bufio.Reader) (*Frame, error) {
 	var hdr [4]byte
 	_, err := io.ReadFull(br, hdr[:])

@@ -28,8 +28,10 @@ type Decoder struct {
 	maxDecPicBuf int
 }
 
+// cap decoded frame size in pixels
 func (d *Decoder) FrameSizeLimit(n int) { d.frameSizeLimit = n }
 
+// feed single nal unit into decoder
 func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
 	if d.sps == nil {
 		d.vps = make(map[uint8]*vps)
@@ -94,6 +96,7 @@ func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
 	return d.decodeSlice(nal)
 }
 
+// drain remaining decoded pictures
 func (d *Decoder) Flush() []*Picture {
 	out := d.finishPicture()
 
@@ -158,7 +161,7 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 	}
 
 	if n := d.frameSizeLimit; n > 0 &&
-		int(s.picWidthInLumaSamples)*int(s.picHeightInLumaSamples) > n {
+		int64(s.picWidthInLumaSamples)*int64(s.picHeightInLumaSamples) > int64(n) {
 		return nil, ErrUnsupported
 	}
 

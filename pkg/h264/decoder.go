@@ -6,11 +6,22 @@ import (
 )
 
 type Decoder struct {
-	spsMap      map[uint32]*SPS
-	ppsMap      map[uint32]*PPS
-	refFrame    *Frame
-	TraceMBCMP  bool
-	SkipDeblock bool
+	spsMap         map[uint32]*SPS
+	ppsMap         map[uint32]*PPS
+	refFrame       *Frame
+	TraceMBCMP     bool
+	SkipDeblock    bool
+	frameSizeLimit int
+}
+
+// cap decoded frame size in pixels
+func (d *Decoder) FrameSizeLimit(n int) { d.frameSizeLimit = n }
+
+func (d *Decoder) checkFrameSize(width, height int) error {
+	if n := d.frameSizeLimit; n > 0 && int64(width)*int64(height) > int64(n) {
+		return fmt.Errorf("frame size %dx%d exceeds limit", width, height)
+	}
+	return nil
 }
 
 type ScalingMatrices struct {
@@ -121,6 +132,7 @@ func applyDefault8x8Intra(dst *[64]int32) {
 	}
 }
 
+// fresh h264 decoder state
 func New() *Decoder {
 	return &Decoder{
 		spsMap: make(map[uint32]*SPS),
@@ -128,6 +140,7 @@ func New() *Decoder {
 	}
 }
 
+// decode nal units until first frame
 func (d *Decoder) DecodeNALUs(nalus [][]byte) (*Frame, error) {
 	for _, nalu := range nalus {
 		if len(nalu) == 0 {
@@ -212,6 +225,7 @@ func (d *Decoder) decodeFrames(nalus [][]byte, includeNonIDR bool) ([]*Frame, er
 	return frames, nil
 }
 
+// decode annexb byte stream
 func (d *Decoder) DecodeAnnexB(data []byte) (*Frame, error) {
 	nalus := ExtractNalusFromByteStream(data)
 	return d.DecodeNALUs(nalus)
@@ -227,6 +241,7 @@ func (d *Decoder) DecodeIDRAnnexB(data []byte) ([]*Frame, error) {
 	return d.DecodeIDRFrames(nalus)
 }
 
+// decode length prefixed avc stream
 func (d *Decoder) DecodeAVC(data []byte) (*Frame, error) {
 	nalus, err := extractAVCNalus(data)
 	if err != nil {
@@ -359,6 +374,9 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 
 	width := int(sps.Width)
 	height := int(sps.Height)
+	if err := d.checkFrameSize(width, height); err != nil {
+		return nil, err
+	}
 	mbWidth := (width + 15) / 16
 	mbHeight := (height + 15) / 16
 

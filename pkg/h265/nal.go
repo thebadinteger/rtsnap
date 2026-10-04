@@ -59,6 +59,7 @@ type NALUnit struct {
 	EPB []uint32
 }
 
+// split header and payload of nal unit
 func ParseNAL(data []byte) (NALUnit, bool) {
 	if len(data) < 2 {
 		return NALUnit{}, false

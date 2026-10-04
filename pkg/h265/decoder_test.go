@@ -81,6 +81,44 @@ func TestDecode1080p(t *testing.T) {
 	t.Logf("decoded 1080p picture size: %dx%d", b.Dx(), b.Dy())
 }
 
+func TestDecodeFrameSizeLimit(t *testing.T) {
+	data, err := os.ReadFile("../../tests/testdata/tiny_intra.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	var d Decoder
+	d.FrameSizeLimit(100)
+	failed := false
+	for _, nal := range SplitAnnexB(data) {
+		if _, err := d.DecodeNAL(nal); err != nil {
+			failed = true
+			break
+		}
+	}
+	if !failed {
+		t.Fatal("expected error for frame over limit, got nil")
+	}
+}
+
+func FuzzH265DecodeNAL(f *testing.F) {
+	data, err := os.ReadFile("../../tests/testdata/tiny_intra.h265")
+	if err != nil {
+		f.Skip("testdata not found")
+	}
+	f.Add([]byte{})
+	for _, nal := range SplitAnnexB(data) {
+		f.Add(nal.RBSP)
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if u, ok := ParseNAL(b); ok {
+			var d Decoder
+			d.FrameSizeLimit(7680 * 4320)
+			_, _ = d.DecodeNAL(u)
+		}
+	})
+}
+
 func TestDecodeTinyIntraConform(t *testing.T) {
 	data, err := os.ReadFile("../../tests/testdata/tiny_intra.h265")
 	if err != nil {
