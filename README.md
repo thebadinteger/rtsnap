@@ -21,7 +21,6 @@
 
 ## Features:  
 - Pure Go & Zero Dependencies
-- Decoders ported from open-source Go projects, see THANKS.md
 - Codecs support: `H.264 (AVC), H.265 (HEVC), MJPEG`
 - Basic and Digest auth support
 
