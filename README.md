@@ -14,6 +14,7 @@
 - [API](#api)
 - [Codecs](#codecs)
 - [Authentication](#authentication)
+- [Specifications](#specifications)
 - [Architecture](#architecture)
 - [Documentation](#documentation)
 - [License](#license)
@@ -132,11 +133,11 @@ Connects to the RTSP stream and queries available video tracks (codec, payload t
 
 ## Codecs
 
-| Codec | RFC | Profiles / Capabilities | Output Image Type |
-|---|---|---|---|
-| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, 4x4 & 8x8 intra, deblocking | `*image.YCbCr` / `*image.NRGBA` |
-| **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32 | `*image.YCbCr` / `image.Image` |
-| **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables | `*image.YCbCr` / `*image.Gray` |
+| Codec | RFC | Profiles / Capabilities | Output Image Type | Documentation |
+|---|---|---|---|---|
+| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, 4x4 & 8x8 intra, deblocking | `*image.YCbCr` / `*image.NRGBA` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
+| **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32 | `*image.YCbCr` / `image.Image` | [pkg/h265](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h265) |
+| **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables | `*image.YCbCr` / `*image.Gray` | [pkg/mjpeg](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/mjpeg) |
 
 ## Authentication
 1. **Basic Authentication (RFC 7617)**: Encoded with standard base64 credentials
@@ -146,6 +147,18 @@ Connects to the RTSP stream and queries available video tracks (codec, payload t
    - Automatic nonce tracking, cnonce generation, and request counter (`nc`) management
 
 Credentials are supplied via `WithAuth("user", "pass")` or in the URL: `rtsp://user:pass@0.0.0.0:554/live`
+
+## Specifications
+| Name | Area |
+|---|---|
+| [RFC2326, RTSP 1.0](https://datatracker.ietf.org/doc/html/rfc2326) | protocol ([pkg/rtsp](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/rtsp)) |
+| [RFC3550, RTP](https://datatracker.ietf.org/doc/html/rfc3550) | transport ([pkg/rtp](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/rtp)) |
+| [RFC8866, SDP](https://datatracker.ietf.org/doc/html/rfc8866) | session description |
+| [RFC6184, RTP Payload Format for H.264 Video](https://datatracker.ietf.org/doc/html/rfc6184) | payload formats / H.264 |
+| [RFC7798, RTP Payload Format for HEVC](https://datatracker.ietf.org/doc/html/rfc7798) | payload formats / H.265 |
+| [RFC2435, RTP Payload Format for JPEG-compressed Video](https://datatracker.ietf.org/doc/html/rfc2435) | payload formats / MJPEG |
+| [RFC7616, HTTP Digest Access Authentication](https://datatracker.ietf.org/doc/html/rfc7616) | digest authentication |
+| [RFC7617, HTTP Basic Authentication](https://datatracker.ietf.org/doc/html/rfc7617) | basic authentication |
 
 ## Architecture  
 Library is organized in modules inside `pkg/` that can also be used independently:  
