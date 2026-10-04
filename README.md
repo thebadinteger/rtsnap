@@ -1,0 +1,171 @@
+# rtsnap  
+### Go library for capturing snapshots from live RTSP streams  
+![Go](https://img.shields.io/badge/Go-1.22%2B-00647d?style=flat&logo=go&logoColor=ffffff)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/thebadinteger/rtsnap)](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
+[![Test](https://github.com/thebadinteger/rtsnap/actions/workflows/test.yml/badge.svg)](https://github.com/thebadinteger/rtsnap/actions/workflows/test.yml)
+[![Lint](https://github.com/thebadinteger/rtsnap/actions/workflows/lint.yml/badge.svg)](https://github.com/thebadinteger/rtsnap/actions/workflows/lint.yml)
+[![License](https://img.shields.io/github/license/thebadinteger/rtsnap)](LICENSE)
+
+---
+
+- [Features](#features)
+- [Start](#start)
+- [Examples](#examples)
+- [API](#api)
+- [Codecs](#codecs)
+- [Authentication](#authentication)
+- [Architecture](#architecture)
+- [Documentation](#documentation)
+- [License](#license)
+
+## Features:  
+- Pure Go & Zero Dependencies
+- Codecs support: `H.264 (AVC), H.265 (HEVC), MJPEG`
+- Basic and Digest auth support
+
+## Start  
+Install the library:  
+```bash
+go get github.com/thebadinteger/rtsnap
+```  
+Capture a snapshot to an `image.Image`:
+```go
+package main
+
+import (
+	"context"
+	"image/png"
+	"os"
+	"time"
+
+	"github.com/thebadinteger/rtsnap"
+)
+
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// capture single image frame
+	img, err := rtsnap.Snapshot(ctx, "rtsp://192.168.1.100:554/live",
+		rtsnap.WithAuth("admin", "secret123"),
+		rtsnap.WithTimeout(5*time.Second),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	f, _ := os.Create("snapshot.png")
+	defer f.Close()
+	_ = png.Encode(f, img)
+}
+```  
+Capture directly to JPEG bytes:
+```go
+package main
+
+import (
+	"context"
+	"os"
+	"time"
+
+	"github.com/thebadinteger/rtsnap"
+)
+
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// capture frame directly as compressed jpeg bytes
+	jpegBytes, err := rtsnap.SnapshotJPEG(
+		ctx,
+		"rtsp://admin:secret123@192.168.1.100:554/live",
+		85, // jpeg quality 1-100
+		rtsnap.WithTimeout(3*time.Second),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	_ = os.WriteFile("snapshot.jpg", jpegBytes, 0644)
+}
+```
+
+## Examples
+Practical and runnable code examples are available in the [`examples/`](examples) directory:  
+- [examples/snapshot](examples/snapshot/main.go) - Basic snapshot capture returning `image.Image` and saving to PNG
+- [examples/jpeg](examples/jpeg/main.go) - Direct capture to JPEG bytes with custom quality encoding
+- [examples/auth](examples/auth/main.go) - Handling Basic and Digest authentication on protected RTSP streams
+- [examples/codec](examples/codec/main.go) - Explicit codec selection and fallback handling
+- [examples/query](examples/query/main.go) - Inspecting streams and discovering available tracks without capturing
+- [examples/timeout](examples/timeout/main.go) - Proper handling of contexts, deadlines, and network timeouts
+- [examples/lowlevel](examples/lowlevel/main.go) - Low-level RTSP client session negotiation and raw RTP packet reading
+- [examples/h264](examples/h264/main.go) - Manual H.264 depacketization and NAL decoding
+- [examples/mjpeg](examples/mjpeg/main.go) - Manual MJPEG depacketization and JPEG frame reconstruction
+
+**Run any example:**
+```bash
+go run ./examples/snapshot
+```  
+
+## API
+### Primary Functions
+#### `rtsnap.Snapshot`
+```go
+func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image, error)
+```
+Connects to the RTSP stream, issues `DESCRIBE`, `SETUP`, and `PLAY`, reads incoming interleaved RTP packets until the first complete intra/key frame is decoded, issues `TEARDOWN`, and returns the decoded `image.Image`  
+#### `rtsnap.SnapshotJPEG`
+```go
+func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error)
+```
+Convenience helper that captures a frame via `Snapshot` and encodes it directly into JPEG bytes with the specified quality (`1` to `100`)  
+#### `rtsnap.Query`
+```go
+func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error)
+```
+Connects to the RTSP stream and queries available video tracks (codec, payload type, clock rate, control URL) without initiating streaming or frame decoding  
+### Functional Options  
+- `WithAuth(username, password string)`: Sets credentials for HTTP Basic or Digest authentication
+- `WithTimeout(d time.Duration)`: Sets a client-side timeout that bounds the total operation duration
+- `WithCodec(c Codec)`: Selects a preferred video codec (`rtsnap.CodecH264`, `rtsnap.CodecH265`, `rtsnap.CodecMJPEG`, or `rtsnap.CodecAuto`). By default, `CodecAuto` selects the highest priority available codec (`H.264` > `H.265` > `MJPEG`)
+
+## Codecs
+
+| Codec | RFC | Profiles / Capabilities | Output Image Type |
+|---|---|---|---|
+| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, 4x4 & 8x8 intra, deblocking | `*image.YCbCr` / `*image.NRGBA` |
+| **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32 | `*image.YCbCr` / `image.Image` |
+| **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables | `*image.YCbCr` / `*image.Gray` |
+
+## Authentication
+1. **Basic Authentication (RFC 7617)**: Encoded with standard base64 credentials
+2. **Digest Authentication (RFC 7616)**:
+   - Supported algorithms: `MD5`, `SHA-256`, `MD5-sess`, `SHA-256-sess`
+   - Supported quality of protection: `qop="auth"`
+   - Automatic nonce tracking, cnonce generation, and request counter (`nc`) management
+
+Credentials are supplied via `WithAuth("user", "pass")` or in the URL: `rtsp://user:pass@0.0.0.0:554/live`
+
+## Architecture  
+Library is organized in modules inside `pkg/` that can also be used independently:  
+```
+rtsnap/
+- rtsnap.go # high-level snapshot api
+- options.go # functional options
+- pkg/
+-- rtsp/ # rtsp 1.0 client, basic/digest auth, sdp parser
+-- rtp/ # rtp packet parser, h264/h265/mjpeg depacketizers
+-- h264/ # h.264 intra/idr decoder
+-- h265/ # h.265 hevc intra decoder
+-- mjpeg/ # mjpeg decoder
+- examples/ # runnable examples
+- tests/ # test suite
+```
+
+## Documentation
+Full documentation, subpackage APIs, and architectural details are in [DOCUMENTATION.md](DOCUMENTATION.md)  
+API reference documentation is also hosted on [pkg.go.dev](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
+
+## License  
+Made by [badinteger](https://github.com/thebadinteger) `[MIT License]`  
+Special thanks: **[THANKS.md](THANKS.md)**

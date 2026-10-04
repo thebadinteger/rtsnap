@@ -1,0 +1,660 @@
+package h265
+
+// Table 8-12.
+var betaTable = [52]uint8{
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24,
+	26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56,
+	58, 60, 62, 64,
+}
+
+var tcTable = [54]uint8{
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3,
+	3, 3, 3, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 10, 11, 13,
+	14, 16, 18, 20, 22, 24,
+}
+
+// blockInfo is what boundary strength derivation reads back after decoding.
+type blockInfo struct {
+	intra bool
+	cbf   bool
+	tuV   bool
+	tuH   bool
+	puV   bool
+	puH   bool
+}
+
+func (d *ctuDecoder) blkIndex(x, y int) int {
+	return (y>>2)*d.mvWidth + x>>2
+}
+
+// blocksIn is how many blocks of a region fall inside the picture, so the
+// loops that walk one need no bound on each block.
+func (d *ctuDecoder) blocksIn(x, y, w, h, log2 int) (int, int) {
+	last := 1<<log2 - 1
+
+	nw := min(x+w, int(d.s.picWidthInLumaSamples)) - x
+	nh := min(y+h, int(d.s.picHeightInLumaSamples)) - y
+
+	return max(nw+last, 0) >> log2, max(nh+last, 0) >> log2
+}
+
+func (d *ctuDecoder) markTU(x, y, w, h int, cbf bool) {
+	nw, nh := d.blocksIn(x, y, w, h, 2)
+
+	for j := range nh {
+		row := d.blk[(y>>2+j)*d.mvWidth+x>>2:][:nw]
+
+		if cbf {
+			for i := range row {
+				row[i].cbf = true
+			}
+		}
+
+		// The edges of 8.7.2 are the first column and the first row of the
+		// block, so only those carry a flag.
+		if j == 0 {
+			for i := range row {
+				row[i].tuH = true
+			}
+		}
+
+		row[0].tuV = true
+	}
+}
+
+func (d *ctuDecoder) markPU(x, y, w, h int, intra bool) {
+	nw, nh := d.blocksIn(x, y, w, h, 2)
+
+	for j := range nh {
+		row := d.blk[(y>>2+j)*d.mvWidth+x>>2:][:nw]
+
+		for i := range row {
+			row[i].intra = intra
+		}
+
+		if j == 0 {
+			for i := range row {
+				row[i].puH = true
+			}
+		}
+
+		row[0].puV = true
+	}
+}
+
+// boundaryStrength is 8.7.2.4.
+func (d *ctuDecoder) boundaryStrength(xP, yP, xQ, yQ int, vertical bool) int {
+	qi := d.blkIndex(xQ, yQ)
+	q := &d.blk[qi]
+
+	tu := q.tuV
+	pu := q.puV
+
+	if !vertical {
+		tu, pu = q.tuH, q.puH
+	}
+
+	// 8.7.2 filters transform and prediction block edges only, not every
+	// edge on the eight-sample grid, and most of them are neither.
+	if !tu && !pu {
+		return 0
+	}
+
+	pi := d.blkIndex(xP, yP)
+	p := &d.blk[pi]
+
+	if p.intra || q.intra {
+		return 2
+	}
+
+	if tu && (p.cbf || q.cbf) {
+		return 1
+	}
+
+	if !d.mvValid[pi] || !d.mvValid[qi] {
+		return 1
+	}
+
+	if differentMotion(&d.mvField[pi], &d.mvField[qi], d.mvPoc[pi], d.mvPoc[qi]) {
+		return 1
+	}
+
+	return 0
+}
+
+func mvFar(a, b mv) bool {
+	return absI32(int32(a.x)-int32(b.x)) >= 4 || absI32(int32(a.y)-int32(b.y)) >= 4
+}
+
+// differentMotion is the motion part of 8.7.2.4, comparing the pictures each
+// block recorded when it was decoded.
+func differentMotion(p, q *mvInfo, pPoc, qPoc [2]int32) bool {
+	var (
+		pp, qp [2]int32
+		pv, qv [2]mv
+		np, nq int
+	)
+
+	for l := range 2 {
+		if p.pred[l] {
+			pp[np], pv[np] = pPoc[l], p.mv[l]
+			np++
+		}
+
+		if q.pred[l] {
+			qp[nq], qv[nq] = qPoc[l], q.mv[l]
+			nq++
+		}
+	}
+
+	if np != nq {
+		return true
+	}
+
+	if np == 1 {
+		return pp[0] != qp[0] || mvFar(pv[0], qv[0])
+	}
+
+	if np == 0 {
+		return false
+	}
+
+	if pp[0] == qp[0] && pp[1] == qp[1] {
+		if pp[0] == pp[1] {
+			return (mvFar(pv[0], qv[0]) || mvFar(pv[1], qv[1])) &&
+				(mvFar(pv[0], qv[1]) || mvFar(pv[1], qv[0]))
+		}
+
+		return mvFar(pv[0], qv[0]) || mvFar(pv[1], qv[1])
+	}
+
+	if pp[0] == qp[1] && pp[1] == qp[0] {
+		return mvFar(pv[0], qv[1]) || mvFar(pv[1], qv[0])
+	}
+
+	return true
+}
+
+// sliceAt is the slice header governing a coding tree block. The filtering
+// parameters of 7.4.7.1 are per slice.
+func (d *ctuDecoder) sliceAt(x, y int) *sliceHeader {
+	rs := (y>>d.s.ctbLog2SizeY)*int(d.s.picWidthInCtbs) + x>>d.s.ctbLog2SizeY
+	if rs < 0 || rs >= len(d.ctbSlice) || int(d.ctbSlice[rs]) >= len(d.slices) {
+		return d.sh
+	}
+
+	return d.slices[d.ctbSlice[rs]]
+}
+
+// deblock is 8.7.2: every vertical edge in the picture, then every horizontal
+// one, both on the eight-sample grid. Within a pass each edge writes its own
+// band of eight lines, so the bands split across workers.
+func (d *ctuDecoder) deblock() {
+	w, h := int(d.s.picWidthInLumaSamples), int(d.s.picHeightInLumaSamples)
+
+	for _, vertical := range []bool{true, false} {
+		d.overRows((h+7)/8, func(r0, r1 int) {
+			for r := r0; r < r1; r++ {
+				y := r * 8
+
+				if !vertical && y == 0 {
+					continue
+				}
+
+				for x := 0; x < w; x += 8 {
+					if vertical && x == 0 {
+						continue
+					}
+
+					d.deblockEdge(x, y, vertical)
+				}
+			}
+		})
+	}
+}
+
+func (d *ctuDecoder) deblockEdge(x, y int, vertical bool) {
+	// The two sides share a coding tree block unless the edge sits on one of
+	// its boundaries, and 8.7.2 only asks about tiles and slices when they do.
+	ctb := 1<<d.s.ctbLog2SizeY - 1
+
+	across := x&ctb == 0
+	if !vertical {
+		across = y&ctb == 0
+	}
+
+	sl := d.sliceAt(x, y)
+	if sl.deblockingDisabled {
+		return
+	}
+
+	deep := d.pic.deep()
+	luma8, stride := d.pic.plane8(0)
+	luma16, stride16 := d.pic.plane16(0)
+
+	if deep {
+		stride = stride16
+	}
+
+	step, line := 1, stride
+	if !vertical {
+		step, line = stride, 1
+	}
+
+	base := y*stride + x
+
+	var (
+		plan     [2]lumaPlan
+		noP, noQ [2]bool
+		onC      [2]bool
+		qpC      [2]int32
+	)
+
+	for k := 0; k < 8; k += 4 {
+		var px, py, qx, qy int
+
+		if vertical {
+			px, py = x-1, y+k
+			qx, qy = x, y+k
+		} else {
+			px, py = x+k, y-1
+			qx, qy = x+k, y
+		}
+
+		if qy >= int(d.s.picHeightInLumaSamples) || qx >= int(d.s.picWidthInLumaSamples) {
+			continue
+		}
+
+		if across && !d.filterEdge(px, py, qx, qy) {
+			continue
+		}
+
+		bs := d.boundaryStrength(px, py, qx, qy, vertical)
+		if bs == 0 {
+			continue
+		}
+
+		pt, qt := d.tbIndex(px, py), d.tbIndex(qx, qy)
+
+		qp := (int32(d.qpY[pt]) + int32(d.qpY[qt]) + 1) >> 1
+
+		// 8.7.2.5.3 leaves a side untouched when its coding unit bypassed the
+		// transform, or is pulse code modulated with filtering turned off.
+		noP[k>>2], noQ[k>>2] = d.noFilter[pt], d.noFilter[qt]
+
+		if beta, tc := betaTc(qp, bs, sl, d.pic.BitDepth); beta != 0 && tc != 0 {
+			if deep {
+				plan[k>>2] = deblockLumaPlan(luma16, base+k*line, line, step, beta, tc)
+			} else {
+				plan[k>>2] = deblockLumaPlan(luma8, base+k*line, line, step, beta, tc)
+			}
+		}
+
+		if bs != 2 || d.s.chromaArrayType() == 0 {
+			continue
+		}
+
+		if (vertical && x%(8*d.s.subWidthC) != 0) || (!vertical && y%(8*d.s.subHeightC) != 0) {
+			continue
+		}
+
+		onC[k>>2], qpC[k>>2] = true, qp
+	}
+
+	d.deblockChromaEdge(x, y, vertical, sl, &onC, &qpC, &noP, &noQ)
+
+	if deep {
+		deblockLumaEdge(luma16, base, line, step, plan, d.pic.BitDepth, noP, noQ)
+	} else {
+		deblockLumaEdge(luma8, base, line, step, plan, d.pic.BitDepth, noP, noQ)
+	}
+}
+
+// deblockChromaEdge is 8.7.2.5.5 over one edge, both groups sharing a call.
+func (d *ctuDecoder) deblockChromaEdge(x, y int, vertical bool, sl *sliceHeader,
+	on *[2]bool, qp *[2]int32, noP, noQ *[2]bool,
+) {
+	if !on[0] && !on[1] {
+		return
+	}
+
+	sw, sh := d.s.subWidthC, d.s.subHeightC
+
+	// The four-sample luma segment spans 4/subHeightC chroma rows on a
+	// vertical edge, and 4/subWidthC columns on a horizontal one.
+	n := 4 / sh
+	if !vertical {
+		n = 4 / sw
+	}
+
+	both := on[0] && on[1] && qp[0] == qp[1] && noP[0] == noP[1] && noQ[0] == noQ[1]
+
+	deep := d.pic.deep()
+	cb8, cs := d.pic.plane8(1)
+	cr8, _ := d.pic.plane8(2)
+	cb16, cs16 := d.pic.plane16(1)
+	cr16, _ := d.pic.plane16(2)
+
+	if deep {
+		cs = cs16
+	}
+
+	for g := range 2 {
+		if !on[g] {
+			continue
+		}
+
+		cx, cy := x, y+4*g
+		if !vertical {
+			cx, cy = x+4*g, y
+		}
+
+		lines := n
+		if both {
+			if g != 0 {
+				continue
+			}
+
+			lines = 2 * n
+		}
+
+		_, tcCb := betaTc(chromaQP(clip3(qp[g]+d.p.cbQPOffset, 0, 57), d.s.chromaArrayType()),
+			2, sl, d.pic.BitDepthC)
+		_, tcCr := betaTc(chromaQP(clip3(qp[g]+d.p.crQPOffset, 0, 57), d.s.chromaArrayType()),
+			2, sl, d.pic.BitDepthC)
+
+		if tcCb == 0 && tcCr == 0 {
+			continue
+		}
+
+		if deep {
+			deblockChromaPair(cb16, cr16, cs, cx/sw, cy/sh, lines, vertical,
+				tcCb, tcCr, d.pic.BitDepthC, noP[g], noQ[g])
+		} else {
+			deblockChromaPair(cb8, cr8, cs, cx/sw, cy/sh, lines, vertical,
+				tcCb, tcCr, d.pic.BitDepthC, noP[g], noQ[g])
+		}
+	}
+}
+
+func betaTc(qp int32, bs int, sh *sliceHeader, bitDepth int) (int32, int32) {
+	qb := clip3(qp+int32(sh.betaOffsetDiv2)*2, 0, 51)
+	beta := int32(betaTable[qb]) * (1 << (bitDepth - 8))
+
+	qt := clip3(qp+2*int32(bs-1)+int32(sh.tcOffsetDiv2)*2, 0, 53)
+	tc := int32(tcTable[qt]) * (1 << (bitDepth - 8))
+
+	return beta, tc
+}
+
+// lumaPlan is what 8.7.2.5.3 decides for one group of four lines.
+type lumaPlan struct {
+	tc       int32
+	mode     uint8
+	nDp, nDq uint8
+}
+
+const (
+	lumaNone = iota
+	lumaStrong
+	lumaNormal
+)
+
+// deblockLumaPlan is 8.7.2.5.3 over the outer two lines of a group.
+func deblockLumaPlan[P pixel](plane []P, base, line, step int, beta, tc int32) lumaPlan {
+	at := func(l, i int) int32 {
+		return int32(plane[base+l*line+i*step])
+	}
+
+	dp0 := absI32(at(0, -3) - 2*at(0, -2) + at(0, -1))
+	dq0 := absI32(at(0, 2) - 2*at(0, 1) + at(0, 0))
+	dp3 := absI32(at(3, -3) - 2*at(3, -2) + at(3, -1))
+	dq3 := absI32(at(3, 2) - 2*at(3, 1) + at(3, 0))
+
+	dp, dq := dp0+dp3, dq0+dq3
+	if dp+dq >= beta {
+		return lumaPlan{}
+	}
+
+	strong := func(l int, d2 int32) bool {
+		return 2*d2 < beta>>2 &&
+			absI32(at(l, -4)-at(l, -1))+absI32(at(l, 0)-at(l, 3)) < beta>>3 &&
+			absI32(at(l, -1)-at(l, 0)) < (5*tc+1)>>1
+	}
+
+	if strong(0, dp0+dq0) && strong(3, dp3+dq3) {
+		return lumaPlan{tc: tc, mode: lumaStrong}
+	}
+
+	pl := lumaPlan{tc: tc, mode: lumaNormal}
+
+	if dp < (beta+beta>>1)>>3 {
+		pl.nDp = 1
+	}
+
+	if dq < (beta+beta>>1)>>3 {
+		pl.nDq = 1
+	}
+
+	return pl
+}
+
+// deblockLumaApply is 8.7.2.5.7 over the four lines its plan was taken from.
+func deblockLumaApply[P pixel](plane []P, base, line, step int, pl lumaPlan,
+	bitDepth int, noP, noQ bool,
+) {
+	tc := pl.tc
+
+	at := func(l, i int) int32 {
+		return int32(plane[base+l*line+i*step])
+	}
+
+	set := func(l, i int, v int32) {
+		if (i < 0 && noP) || (i >= 0 && noQ) {
+			return
+		}
+
+		plane[base+l*line+i*step] = P(clip3(v, 0, 1<<bitDepth-1))
+	}
+
+	if pl.mode == lumaStrong {
+		c := 2 * tc
+
+		for l := range 4 {
+			p0, p1, p2, p3 := at(l, -1), at(l, -2), at(l, -3), at(l, -4)
+			q0, q1, q2, q3 := at(l, 0), at(l, 1), at(l, 2), at(l, 3)
+
+			set(l, -1, clip3((p2+2*p1+2*p0+2*q0+q1+4)>>3, p0-c, p0+c))
+			set(l, -2, clip3((p2+p1+p0+q0+2)>>2, p1-c, p1+c))
+			set(l, -3, clip3((2*p3+3*p2+p1+p0+q0+4)>>3, p2-c, p2+c))
+			set(l, 0, clip3((p1+2*p0+2*q0+2*q1+q2+4)>>3, q0-c, q0+c))
+			set(l, 1, clip3((p0+q0+q1+q2+2)>>2, q1-c, q1+c))
+			set(l, 2, clip3((p0+q0+q1+3*q2+2*q3+4)>>3, q2-c, q2+c))
+		}
+
+		return
+	}
+
+	for l := range 4 {
+		p0, p1, p2 := at(l, -1), at(l, -2), at(l, -3)
+		q0, q1, q2 := at(l, 0), at(l, 1), at(l, 2)
+
+		delta := (9*(q0-p0) - 3*(q1-p1) + 8) >> 4
+		if absI32(delta) >= tc*10 {
+			continue
+		}
+
+		delta = clip3(delta, -tc, tc)
+
+		set(l, -1, p0+delta)
+		set(l, 0, q0-delta)
+
+		if pl.nDp != 0 {
+			set(l, -2, p1+clip3(((p2+p0+1)>>1-p1+delta)>>1, -(tc>>1), tc>>1))
+		}
+
+		if pl.nDq != 0 {
+			set(l, 1, q1+clip3(((q2+q0+1)>>1-q1-delta)>>1, -(tc>>1), tc>>1))
+		}
+	}
+}
+
+// deblockLumaEdge filters the eight lines of one edge, both groups at once.
+func deblockLumaEdge[P pixel](plane []P, base, line, step int, pl [2]lumaPlan,
+	bitDepth int, noP, noQ [2]bool,
+) {
+	if pl[0].mode == lumaNone && pl[1].mode == lumaNone {
+		return
+	}
+
+	if bitDepth == 8 {
+		if p8, ok := any(plane).([]uint8); ok {
+			mode, ok := lumaBoth(&pl, &noP, &noQ)
+			if ok {
+				flags := int32(0)
+				if noP[0] {
+					flags |= 1
+				}
+
+				if noQ[0] {
+					flags |= 2
+				}
+
+				if deblockLuma8(p8, base, line, step, mode, pl, flags) {
+					return
+				}
+			}
+		}
+	}
+
+	for g := range 2 {
+		if pl[g].mode == lumaNone {
+			continue
+		}
+
+		deblockLumaApply(plane, base+g*4*line, line, step, pl[g], bitDepth, noP[g], noQ[g])
+	}
+}
+
+// lumaBoth gives a group without a filter the other's, at a tc of zero.
+func lumaBoth(pl *[2]lumaPlan, noP, noQ *[2]bool) (uint8, bool) {
+	a, b := 0, 1
+	if pl[0].mode == lumaNone {
+		a, b = 1, 0
+	}
+
+	if pl[b].mode == lumaNone {
+		pl[b].mode = pl[a].mode
+		noP[b], noQ[b] = noP[a], noQ[a]
+	}
+
+	return pl[0].mode, pl[0].mode == pl[1].mode && noP[0] == noP[1] && noQ[0] == noQ[1]
+}
+
+// deblockLuma8 hands one edge to a kernel, turning it first when it runs down.
+func deblockLuma8(p []uint8, base, line, step int, mode uint8, pl [2]lumaPlan, flags int32) bool {
+	strong, normal := deblockStrongAsm, deblockNormalAsm
+	if strong == nil || normal == nil {
+		return false
+	}
+
+	nd := int32(pl[0].nDp) | int32(pl[0].nDq)<<1 |
+		int32(pl[1].nDp)<<2 | int32(pl[1].nDq)<<3
+
+	if step != 1 {
+		q := p[base-4*step:]
+
+		if mode == lumaStrong {
+			strong(q, step, pl[0].tc, pl[1].tc, flags)
+		} else {
+			normal(q, step, pl[0].tc, pl[1].tc, nd, flags)
+		}
+
+		return true
+	}
+
+	if deblockTurnIn == nil {
+		return false
+	}
+
+	var buf [8 * 8]uint8
+
+	deblockTurnIn(buf[:], p[base-4:], line)
+
+	if mode == lumaStrong {
+		strong(buf[:], 8, pl[0].tc, pl[1].tc, flags)
+	} else {
+		normal(buf[:], 8, pl[0].tc, pl[1].tc, nd, flags)
+	}
+
+	deblockTurnOut(p[base-4:], line, buf[:])
+
+	return true
+}
+
+// deblockChromaPair is 8.7.2.5.5 over both components at once.
+func deblockChromaPair[P pixel](cb, cr []P, stride, x, y, n int, vertical bool,
+	tcCb, tcCr int32, bitDepth int, noP, noQ bool,
+) {
+	step, line := 1, stride
+	if !vertical {
+		step, line = stride, 1
+	}
+
+	base := y*stride + x
+	maxV := int32(1<<bitDepth - 1)
+
+	for l := range n {
+		off := base + l*line
+
+		if tcCb != 0 {
+			chromaLine(cb, off, step, tcCb, maxV, noP, noQ)
+		}
+
+		if tcCr != 0 {
+			chromaLine(cr, off, step, tcCr, maxV, noP, noQ)
+		}
+	}
+}
+
+func chromaLine[P pixel](plane []P, off, step int, tc, maxV int32, noP, noQ bool) {
+	p0, p1 := int32(plane[off-step]), int32(plane[off-2*step])
+	q0, q1 := int32(plane[off]), int32(plane[off+step])
+
+	delta := clip3((((q0-p0)<<2)+p1-q1+4)>>3, -tc, tc)
+
+	if !noP {
+		plane[off-step] = P(clip3(p0+delta, 0, maxV))
+	}
+
+	if !noQ {
+		plane[off] = P(clip3(q0-delta, 0, maxV))
+	}
+}
+
+// filterEdge is the filterEdgeFlag derivation of 8.7.2, which suppresses
+// filtering across a tile or slice boundary the parameter sets close off.
+func (d *ctuDecoder) filterEdge(xP, yP, xQ, yQ int) bool {
+	w := int(d.s.picWidthInCtbs)
+
+	pRs := (yP>>d.s.ctbLog2SizeY)*w + xP>>d.s.ctbLog2SizeY
+	qRs := (yQ>>d.s.ctbLog2SizeY)*w + xQ>>d.s.ctbLog2SizeY
+
+	if pRs == qRs {
+		return true
+	}
+
+	if !d.p.loopFilterAcrossTiles && d.tileID[d.rsToTs[pRs]] != d.tileID[d.rsToTs[qRs]] {
+		return false
+	}
+
+	if d.ctbSliceAddr[pRs] != d.ctbSliceAddr[qRs] {
+		if !d.sliceLF[d.ctbSliceAddr[qRs]] {
+			return false
+		}
+	}
+
+	return true
+}

@@ -1,0 +1,277 @@
+package rtsnap
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"image"
+	"image/jpeg"
+	"time"
+
+	"github.com/thebadinteger/rtsnap/pkg/h264"
+	"github.com/thebadinteger/rtsnap/pkg/h265"
+	"github.com/thebadinteger/rtsnap/pkg/mjpeg"
+	"github.com/thebadinteger/rtsnap/pkg/rtp"
+	"github.com/thebadinteger/rtsnap/pkg/rtsp"
+)
+
+// snapshot captures a single image from an rtsp stream
+func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image, error) {
+	o := Options{
+		Timeout: 10 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	if o.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
+		defer cancel()
+	}
+
+	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	if err := client.Describe(ctx); err != nil {
+		return nil, err
+	}
+
+	track, err := client.SelectTrack(string(o.Codec))
+	if err != nil {
+		return nil, err
+	}
+	client.Track = track
+
+	if err := client.Setup(ctx); err != nil {
+		return nil, err
+	}
+
+	if err := client.Play(ctx); err != nil {
+		return nil, err
+	}
+	defer client.Teardown(ctx)
+
+	switch client.Track.Codec {
+	case "mjpeg":
+		return captureMJPEG(ctx, client)
+	case "h264":
+		return captureH264(ctx, client)
+	case "h265":
+		return captureH265(ctx, client)
+	default:
+		return nil, fmt.Errorf("unsupported video codec: %s", client.Track.Codec)
+	}
+}
+
+// snapshotjpeg captures a frame and encodes it directly as jpeg bytes
+func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error) {
+	img, err := Snapshot(ctx, rtspURL, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if quality <= 0 || quality > 100 {
+		quality = 85
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, fmt.Errorf("encode jpeg: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+type TrackInfo struct {
+	Codec       Codec
+	PayloadType uint8
+	ClockRate   int
+	Control     string
+}
+
+type StreamInfo struct {
+	URL    string
+	Tracks []TrackInfo
+}
+
+// query inspects an rtsp stream and returns available media tracks
+func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error) {
+	o := Options{
+		Timeout: 10 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	if o.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
+		defer cancel()
+	}
+
+	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	if err := client.Describe(ctx); err != nil {
+		return nil, err
+	}
+
+	info := &StreamInfo{
+		URL: rtspURL,
+	}
+	for _, t := range client.Tracks {
+		info.Tracks = append(info.Tracks, TrackInfo{
+			Codec:       Codec(t.Codec),
+			PayloadType: t.PayloadType,
+			ClockRate:   t.ClockRate,
+			Control:     t.Control,
+		})
+	}
+
+	return info, nil
+}
+
+func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error) {
+	depack := rtp.NewMJPEGDepacketizer()
+	dec := mjpeg.NewDecoder()
+
+	for {
+		frame, err := client.ReadFrame(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if frame.Channel != client.RTPChannel() {
+			continue
+		}
+
+		var pkt rtp.Packet
+		if err := pkt.Unmarshal(frame.Payload); err != nil {
+			continue
+		}
+
+		jpegBytes, err := depack.Decode(&pkt)
+		if err != nil {
+			continue
+		}
+		if len(jpegBytes) > 0 {
+			return dec.Decode(jpegBytes)
+		}
+	}
+}
+
+func captureH264(ctx context.Context, client *rtsp.Client) (image.Image, error) {
+	depack := rtp.NewH264Depacketizer()
+	dec := h264.New()
+
+	// feed initial sps and pps from sdp if present
+	if len(client.Track.SPS) > 0 {
+		_, _ = dec.DecodeNALUs(client.Track.SPS)
+	}
+	if len(client.Track.PPS) > 0 {
+		_, _ = dec.DecodeNALUs(client.Track.PPS)
+	}
+
+	for {
+		frame, err := client.ReadFrame(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if frame.Channel != client.RTPChannel() {
+			continue
+		}
+
+		var pkt rtp.Packet
+		if err := pkt.Unmarshal(frame.Payload); err != nil {
+			continue
+		}
+
+		nalus, err := depack.Decode(&pkt)
+		if err != nil {
+			continue
+		}
+		if len(nalus) == 0 {
+			continue
+		}
+
+		f, err := dec.DecodeNALUs(nalus)
+		if err == nil && f != nil {
+			img := f.Image()
+			if img != nil {
+				return img, nil
+			}
+		}
+	}
+}
+
+func captureH265(ctx context.Context, client *rtsp.Client) (image.Image, error) {
+	depack := rtp.NewH265Depacketizer()
+	var dec h265.Decoder
+
+	// feed initial vps, sps, pps from sdp if present
+	for _, vps := range client.Track.VPS {
+		if u, ok := h265.ParseNAL(vps); ok {
+			_, _ = dec.DecodeNAL(u)
+		}
+	}
+	for _, sps := range client.Track.SPS {
+		if u, ok := h265.ParseNAL(sps); ok {
+			_, _ = dec.DecodeNAL(u)
+		}
+	}
+	for _, pps := range client.Track.PPS {
+		if u, ok := h265.ParseNAL(pps); ok {
+			_, _ = dec.DecodeNAL(u)
+		}
+	}
+
+	for {
+		frame, err := client.ReadFrame(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if frame.Channel != client.RTPChannel() {
+			continue
+		}
+
+		var pkt rtp.Packet
+		if err := pkt.Unmarshal(frame.Payload); err != nil {
+			continue
+		}
+
+		nalus, err := depack.Decode(&pkt)
+		if err != nil {
+			continue
+		}
+
+		for _, nal := range nalus {
+			u, ok := h265.ParseNAL(nal)
+			if !ok {
+				continue
+			}
+
+			pics, err := dec.DecodeNAL(u)
+			if err == nil {
+				for _, p := range pics {
+					if img := p.Image(); img != nil {
+						return img, nil
+					}
+				}
+			}
+
+			// check if picture is ready after intra random access point
+			if u.Type.IsIRAP() {
+				for _, p := range dec.Flush() {
+					if img := p.Image(); img != nil {
+						return img, nil
+					}
+				}
+			}
+		}
+	}
+}
