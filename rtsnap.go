@@ -16,40 +16,14 @@ import (
 )
 
 func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image, error) {
-	o := Options{
-		Timeout: 10 * time.Second,
-	}
-	for _, opt := range opts {
-		opt(&o)
-	}
-
-	if o.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
-		defer cancel()
-	}
-
-	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password)
+	ctx, client, o, cancel, err := connect(ctx, rtspURL, opts...)
 	if err != nil {
 		return nil, err
 	}
+	defer cancel()
 	defer client.Close()
 
-	if err := client.Describe(ctx); err != nil {
-		return nil, err
-	}
-
-	track, err := client.SelectTrack(string(o.Codec))
-	if err != nil {
-		return nil, err
-	}
-	client.Track = track
-
-	if err := client.Setup(ctx); err != nil {
-		return nil, err
-	}
-
-	if err := client.Play(ctx); err != nil {
+	if err := playTrack(ctx, client, o.Codec); err != nil {
 		return nil, err
 	}
 	defer func() { _ = client.Teardown(ctx) }()
@@ -67,40 +41,14 @@ func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image,
 }
 
 func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error) {
-	o := Options{
-		Timeout: 10 * time.Second,
-	}
-	for _, opt := range opts {
-		opt(&o)
-	}
-
-	if o.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
-		defer cancel()
-	}
-
-	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password)
+	ctx, client, o, cancel, err := connect(ctx, rtspURL, opts...)
 	if err != nil {
 		return nil, err
 	}
+	defer cancel()
 	defer client.Close()
 
-	if err := client.Describe(ctx); err != nil {
-		return nil, err
-	}
-
-	track, err := client.SelectTrack(string(o.Codec))
-	if err != nil {
-		return nil, err
-	}
-	client.Track = track
-
-	if err := client.Setup(ctx); err != nil {
-		return nil, err
-	}
-
-	if err := client.Play(ctx); err != nil {
+	if err := playTrack(ctx, client, o.Codec); err != nil {
 		return nil, err
 	}
 	defer func() { _ = client.Teardown(ctx) }()
@@ -150,7 +98,7 @@ type StreamInfo struct {
 	Tracks []TrackInfo
 }
 
-func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error) {
+func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Context, *rtsp.Client, Options, context.CancelFunc, error) {
 	o := Options{
 		Timeout: 10 * time.Second,
 	}
@@ -158,21 +106,47 @@ func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, er
 		opt(&o)
 	}
 
+	cancel := context.CancelFunc(func() {})
 	if o.Timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
-		defer cancel()
 	}
 
 	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password)
 	if err != nil {
-		return nil, err
+		cancel()
+		return nil, nil, o, nil, err
 	}
-	defer client.Close()
 
 	if err := client.Describe(ctx); err != nil {
+		_ = client.Close()
+		cancel()
+		return nil, nil, o, nil, err
+	}
+
+	return ctx, client, o, cancel, nil
+}
+
+func playTrack(ctx context.Context, client *rtsp.Client, codec Codec) error {
+	track, err := client.SelectTrack(string(codec))
+	if err != nil {
+		return err
+	}
+	client.Track = track
+
+	if err := client.Setup(ctx); err != nil {
+		return err
+	}
+
+	return client.Play(ctx)
+}
+
+func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error) {
+	ctx, client, _, cancel, err := connect(ctx, rtspURL, opts...)
+	if err != nil {
 		return nil, err
 	}
+	defer cancel()
+	defer client.Close()
 
 	info := &StreamInfo{
 		URL: rtspURL,

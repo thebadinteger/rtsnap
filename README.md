@@ -21,6 +21,7 @@
 
 ## Features:  
 - Pure Go & Zero Dependencies
+- Decoders ported from open-source Go projects, see THANKS.md
 - Codecs support: `H.264 (AVC), H.265 (HEVC), MJPEG`
 - Basic and Digest auth support
 
@@ -175,6 +176,9 @@ rtsnap/
 - examples/ # runnable examples
 - tests/ # test suite
 ```
+
+Transport is TCP interleaved only, UDP is not supported  
+`rtsps` skips TLS certificate verification because cameras use self-signed certificates
 
 ## Documentation
 [Open documentation](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
