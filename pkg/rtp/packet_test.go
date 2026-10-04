@@ -43,6 +43,7 @@ func TestH264DepacketizerFUA(t *testing.T) {
 	d := NewH264Depacketizer()
 
 	pkt1 := &Packet{
+		SequenceNumber: 1,
 		Payload: []byte{
 			0x7c,
 			0x85,
@@ -58,7 +59,8 @@ func TestH264DepacketizerFUA(t *testing.T) {
 	}
 
 	pkt2 := &Packet{
-		Marker: true,
+		Marker:         true,
+		SequenceNumber: 2,
 		Payload: []byte{
 			0x7c,
 			0x45,
@@ -79,10 +81,43 @@ func TestH264DepacketizerFUA(t *testing.T) {
 	}
 }
 
+func TestH264FUGapRecovery(t *testing.T) {
+	d := NewH264Depacketizer()
+
+	frag := func(seq uint16, hdr byte, data ...byte) *Packet {
+		return &Packet{
+			SequenceNumber: seq,
+			Payload:        append([]byte{0x7c, hdr}, data...),
+		}
+	}
+
+	if nalus, _ := d.Decode(frag(1, 0x85, 0x01)); len(nalus) != 0 {
+		t.Fatalf("expected 0 nalus on start, got %d", len(nalus))
+	}
+	if nalus, _ := d.Decode(frag(3, 0x05, 0x02)); len(nalus) != 0 {
+		t.Fatalf("expected 0 nalus on gap fragment, got %d", len(nalus))
+	}
+	if nalus, _ := d.Decode(frag(3, 0x05, 0x02)); len(nalus) != 0 {
+		t.Fatalf("expected duplicate to be dropped, got %d nalus", len(nalus))
+	}
+	if nalus, _ := d.Decode(frag(4, 0x85, 0x0a)); len(nalus) != 0 {
+		t.Fatalf("expected 0 nalus on fresh start, got %d", len(nalus))
+	}
+	nalus, _ := d.Decode(frag(5, 0x45, 0x0b))
+	if len(nalus) != 1 {
+		t.Fatalf("expected recovered nalu, got %d", len(nalus))
+	}
+	expected := []byte{0x65, 0x0a, 0x0b}
+	if !bytes.Equal(nalus[0], expected) {
+		t.Fatalf("recovered nalu mismatch: got %v, want %v", nalus[0], expected)
+	}
+}
+
 func TestH265DepacketizerFU(t *testing.T) {
 	d := NewH265Depacketizer()
 
 	pkt1 := &Packet{
+		SequenceNumber: 1,
 		Payload: []byte{
 			49 << 1, 0x01,
 			0x80 | 19,
@@ -98,7 +133,8 @@ func TestH265DepacketizerFU(t *testing.T) {
 	}
 
 	pkt2 := &Packet{
-		Marker: true,
+		Marker:         true,
+		SequenceNumber: 2,
 		Payload: []byte{
 			49 << 1, 0x01,
 			0x40 | 19,
@@ -116,6 +152,34 @@ func TestH265DepacketizerFU(t *testing.T) {
 	expectedHdr0 := byte((49 << 1 & 0x81) | (19 << 1))
 	if nalus[0][0] != expectedHdr0 || nalus[0][1] != 0x01 {
 		t.Fatalf("invalid reconstructed h265 header: %02x %02x", nalus[0][0], nalus[0][1])
+	}
+}
+
+func TestH265FUGapRecovery(t *testing.T) {
+	d := NewH265Depacketizer()
+
+	frag := func(seq uint16, hdr byte, data ...byte) *Packet {
+		return &Packet{
+			SequenceNumber: seq,
+			Payload:        append([]byte{49 << 1, 0x01, hdr}, data...),
+		}
+	}
+
+	if nalus, _ := d.Decode(frag(1, 0x80|19, 0x10)); len(nalus) != 0 {
+		t.Fatalf("expected 0 nalus on start, got %d", len(nalus))
+	}
+	if nalus, _ := d.Decode(frag(3, 19, 0x20)); len(nalus) != 0 {
+		t.Fatalf("expected 0 nalus on gap fragment, got %d", len(nalus))
+	}
+	if nalus, _ := d.Decode(frag(4, 0x80|19, 0x30)); len(nalus) != 0 {
+		t.Fatalf("expected 0 nalus on fresh start, got %d", len(nalus))
+	}
+	nalus, _ := d.Decode(frag(5, 0x40|19, 0x40))
+	if len(nalus) != 1 {
+		t.Fatalf("expected recovered nalu, got %d", len(nalus))
+	}
+	if len(nalus[0]) != 4 || !bytes.Equal(nalus[0][2:], []byte{0x30, 0x40}) {
+		t.Fatalf("recovered nalu mismatch: %v", nalus[0])
 	}
 }
 
@@ -152,4 +216,36 @@ func TestMJPEGDepacketizer(t *testing.T) {
 
 	_, err = jpeg.Decode(bytes.NewReader(jpegBytes))
 	t.Logf("jpeg constructed size: %d bytes, decode status: %v", len(jpegBytes), err)
+}
+
+func TestMJPEGOffsetGapRecovery(t *testing.T) {
+	d := NewMJPEGDepacketizer()
+
+	mk := func(seq uint16, marker bool, offset int, data string) *Packet {
+		return &Packet{
+			Marker:         marker,
+			SequenceNumber: seq,
+			Payload: append([]byte{
+				0x00, byte(offset >> 16), byte(offset >> 8), byte(offset),
+				0x01, 50, 2, 2,
+			}, []byte(data)...),
+		}
+	}
+
+	if out, _ := d.Decode(mk(1, false, 0, "AA")); len(out) != 0 {
+		t.Fatalf("expected 0 bytes on first fragment, got %d", len(out))
+	}
+	if out, _ := d.Decode(mk(3, false, 10, "BB")); len(out) != 0 {
+		t.Fatalf("expected gap fragment to be dropped, got %d bytes", len(out))
+	}
+	out, err := d.Decode(mk(4, true, 0, "CC"))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected recovered jpeg frame")
+	}
+	if out[0] != 0xFF || out[1] != 0xD8 {
+		t.Fatalf("invalid jpeg start: %02x %02x", out[0], out[1])
+	}
 }

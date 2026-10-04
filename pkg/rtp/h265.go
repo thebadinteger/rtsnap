@@ -10,6 +10,8 @@ type H265Depacketizer struct {
 	naluType  uint8
 	hdr0      uint8
 	hdr1      uint8
+	lastSeq   uint16
+	hasSeq    bool
 }
 
 func NewH265Depacketizer() *H265Depacketizer {
@@ -23,15 +25,24 @@ func (d *H265Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 
 	nalType := (pkt.Payload[0] >> 1) & 0x3f
 
+	if d.hasSeq && pkt.SequenceNumber == d.lastSeq {
+		return nil, nil
+	}
+	if d.hasSeq && pkt.SequenceNumber-d.lastSeq != 1 {
+		d.fragments = d.fragments[:0]
+	}
+	d.lastSeq = pkt.SequenceNumber
+	d.hasSeq = true
+
 	switch {
 	case nalType <= 47:
-		// single nal unit
+		d.fragments = d.fragments[:0]
 		nalu := make([]byte, len(pkt.Payload))
 		copy(nalu, pkt.Payload)
 		return [][]byte{nalu}, nil
 
 	case nalType == 48:
-		// ap aggregation
+		d.fragments = d.fragments[:0]
 		var nalus [][]byte
 		buf := pkt.Payload[2:]
 		for len(buf) >= 2 {
@@ -48,7 +59,6 @@ func (d *H265Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 		return nalus, nil
 
 	case nalType == 49:
-		// fu fragmentation
 		if len(pkt.Payload) < 3 {
 			return nil, fmt.Errorf("fu packet too short")
 		}

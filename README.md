@@ -23,6 +23,8 @@
 - Pure Go & Zero Dependencies
 - Codecs support: `H.264 (AVC), H.265 (HEVC), MJPEG`
 - Basic and Digest auth support
+- Transports: `TCP interleaved, UDP unicast` 
+- Auto fallback with packet loss recovery
 
 ## Start  
 Install the library:  
@@ -130,13 +132,14 @@ Connects to the RTSP stream and queries available video tracks (codec, payload t
 - `WithTimeout(d time.Duration)`: Sets a client-side timeout that bounds the total operation duration
 - `WithCodec(c Codec)`: Selects a preferred video codec (`rtsnap.CodecH264`, `rtsnap.CodecH265`, `rtsnap.CodecMJPEG`, or `rtsnap.CodecAuto`). By default, `CodecAuto` selects the highest priority available codec (`H.264` > `H.265` > `MJPEG`)
 - `WithFast()`: Skips loop filters (`H.264` deblocking, `H.265` deblocking and SAO) for faster decoding with negligible quality loss on single snapshots
+- `WithTransport(t Transport)`: Selects RTP transport (`rtsnap.TransportTCP`, `rtsnap.TransportUDP`, `rtsnap.TransportAuto`). Defaults to TCP interleaved. `Auto` tries UDP first and falls back to TCP when the camera rejects it
 
 ## Codecs
 
 | Codec | RFC | Profiles / Capabilities | Output Image Type | Documentation |
 |---|---|---|---|---|
 | **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, 4x4 & 8x8 intra, deblocking | `*image.YCbCr` / `*image.NRGBA` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
-| **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32 | `*image.YCbCr` / `image.Image` | [pkg/h265](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h265) |
+| **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32, SIMD kernels (AVX2/NEON/RVV) | `*image.YCbCr` / `image.Image` | [pkg/h265](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h265) |
 | **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables | `*image.YCbCr` / `*image.Gray` | [pkg/mjpeg](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/mjpeg) |
 
 ## Authentication
@@ -176,7 +179,7 @@ rtsnap/
 - tests/ # test suite
 ```
 
-Transport is TCP interleaved only, UDP is not supported  
+Transports: TCP interleaved (default), UDP unicast, auto UDP with TCP fallback  
 `rtsps` skips TLS certificate verification because cameras use self-signed certificates
 
 ## Documentation

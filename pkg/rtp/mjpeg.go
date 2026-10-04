@@ -122,6 +122,8 @@ type MJPEGDepacketizer struct {
 	restartInt     uint16
 	quantTables    [][]byte
 	hasFirstPacket bool
+	lastSeq        uint16
+	hasSeq         bool
 }
 
 func NewMJPEGDepacketizer() *MJPEGDepacketizer {
@@ -149,6 +151,13 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		restartInterval = binary.BigEndian.Uint16(buf[:2])
 		buf = buf[4:]
 	}
+
+	if d.hasSeq && pkt.SequenceNumber == d.lastSeq {
+		return nil, nil
+	}
+	gap := d.hasSeq && pkt.SequenceNumber-d.lastSeq != 1
+	d.lastSeq = pkt.SequenceNumber
+	d.hasSeq = true
 
 	if offset == 0 {
 		d.fragments = d.fragments[:0]
@@ -188,7 +197,10 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		d.fragments = append(d.fragments, f)
 		d.fragmentsLen = len(f)
 	} else {
-		if !d.hasFirstPacket {
+		if !d.hasFirstPacket || gap || offset != d.fragmentsLen {
+			d.fragments = d.fragments[:0]
+			d.fragmentsLen = 0
+			d.hasFirstPacket = false
 			return nil, nil
 		}
 		f := make([]byte, len(buf))

@@ -123,6 +123,8 @@ func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Conte
 		return nil, nil, o, nil, err
 	}
 
+	client.Transport = o.Transport
+
 	return ctx, client, o, cancel, nil
 }
 

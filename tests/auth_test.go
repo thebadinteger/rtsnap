@@ -106,6 +106,38 @@ func TestAuthURLCredentials(t *testing.T) {
 	}
 }
 
+func TestAuthLateOnSetup(t *testing.T) {
+	data, err := os.ReadFile("testdata/black_idr.264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	nalus := h264.ExtractNalusFromByteStream(data)
+	server, err := newMockServer(&mockServer{
+		authMode: "digest",
+		username: "lateuser",
+		password: "latepassword",
+		authLate: true,
+		codec:    "h264",
+		packets:  makeRTPPacketsH264(nalus),
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, server.URL(), rtsnap.WithAuth("lateuser", "latepassword"))
+	if err != nil {
+		t.Fatalf("late auth snapshot failed: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil image")
+	}
+}
+
 func TestAuthUnitHeaders(t *testing.T) {
 	hdr := `Digest realm="myrealm", nonce="abcd1234"`
 	a := rtsp.NewAuth(hdr, "user1", "pass1")

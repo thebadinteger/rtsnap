@@ -9,6 +9,8 @@ type H264Depacketizer struct {
 	fragments [][]byte
 	naluType  uint8
 	nri       uint8
+	lastSeq   uint16
+	hasSeq    bool
 }
 
 func NewH264Depacketizer() *H264Depacketizer {
@@ -22,14 +24,24 @@ func (d *H264Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 
 	nalType := pkt.Payload[0] & 0x1f
 
+	if d.hasSeq && pkt.SequenceNumber == d.lastSeq {
+		return nil, nil
+	}
+	if d.hasSeq && pkt.SequenceNumber-d.lastSeq != 1 {
+		d.fragments = d.fragments[:0]
+	}
+	d.lastSeq = pkt.SequenceNumber
+	d.hasSeq = true
+
 	switch {
 	case nalType >= 1 && nalType <= 23:
-		// single nal unit
+		d.fragments = d.fragments[:0]
 		nalu := make([]byte, len(pkt.Payload))
 		copy(nalu, pkt.Payload)
 		return [][]byte{nalu}, nil
 
 	case nalType == 24:
+		d.fragments = d.fragments[:0]
 		var nalus [][]byte
 		buf := pkt.Payload[1:]
 		for len(buf) >= 2 {

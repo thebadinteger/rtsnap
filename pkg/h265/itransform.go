@@ -245,6 +245,18 @@ type transformScratch struct {
 	block2 [32 * 32]int32
 }
 
+var transMatrix32 = func() [32][32]int32 {
+	var m [32][32]int32
+
+	for j, row := range transMatrix {
+		for i, v := range row {
+			m[j][i] = int32(v)
+		}
+	}
+
+	return m
+}()
+
 func transposeBlock(dst, src []int32, n int) {
 	if k := transposeAsm; k != nil {
 		k(dst, src, n)

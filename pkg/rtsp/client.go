@@ -24,7 +24,12 @@ type Client struct {
 	auth       *Auth
 	Tracks     []*MediaTrack
 	Track      *MediaTrack
+	Transport  Transport
 	rtpChannel int
+	udp        bool
+	udpRTP     net.PacketConn
+	udpRTCP    net.PacketConn
+	udpBuf     []byte
 }
 
 func Dial(ctx context.Context, rtspURL string, user, pass string) (*Client, error) {
@@ -122,6 +127,32 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 	return res, err
 }
 
+func (c *Client) roundTrip(ctx context.Context, req *Request) (*Response, error) {
+	res, err := c.send(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode == 401 {
+		return c.authRetry(ctx, req, res)
+	}
+	return res, nil
+}
+
+func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) (*Response, error) {
+	if c.auth != nil {
+		return unauth, nil
+	}
+	wwwAuth := unauth.Header("WWW-Authenticate")
+	if wwwAuth == "" {
+		return nil, fmt.Errorf("unauthorized without www-authenticate header")
+	}
+	c.auth = NewAuth(wwwAuth, c.user, c.pass)
+	if c.auth == nil {
+		return nil, fmt.Errorf("unsupported auth header: %s", wwwAuth)
+	}
+	return c.send(ctx, req)
+}
+
 func (c *Client) Describe(ctx context.Context) error {
 	req := &Request{
 		Method: "DESCRIBE",
@@ -131,30 +162,12 @@ func (c *Client) Describe(ctx context.Context) error {
 		},
 	}
 
-	res, err := c.send(ctx, req)
+	res, err := c.roundTrip(ctx, req)
 	if err != nil {
 		return fmt.Errorf("describe failed: %w", err)
 	}
 
-	if res.StatusCode == 401 {
-		wwwAuth := res.Header("WWW-Authenticate")
-		if wwwAuth == "" {
-			return fmt.Errorf("unauthorized without www-authenticate header")
-		}
-		c.auth = NewAuth(wwwAuth, c.user, c.pass)
-		if c.auth == nil {
-			return fmt.Errorf("unsupported auth header: %s", wwwAuth)
-		}
-
-		// retry with authorization
-		res, err = c.send(ctx, req)
-		if err != nil {
-			return fmt.Errorf("describe retry failed: %w", err)
-		}
-		if res.StatusCode != 200 {
-			return fmt.Errorf("describe rejected: %d %s", res.StatusCode, res.StatusMessage)
-		}
-	} else if res.StatusCode != 200 {
+	if res.StatusCode != 200 {
 		return fmt.Errorf("describe rejected: %d %s", res.StatusCode, res.StatusMessage)
 	}
 
@@ -172,6 +185,124 @@ func (c *Client) Setup(ctx context.Context) error {
 		return fmt.Errorf("no track available for setup")
 	}
 
+	t := c.Transport
+	if t == "" {
+		t = TransportTCP
+	}
+
+	if t == TransportUDP || t == TransportAuto {
+		if err := c.setupUDP(ctx); err != nil {
+			if t != TransportAuto {
+				return err
+			}
+		} else {
+			return nil
+		}
+	}
+
+	return c.setupTCP(ctx)
+}
+
+func (c *Client) storeSession(res *Response) {
+	sess := res.Header("Session")
+	if sess == "" {
+		return
+	}
+	if semi := strings.IndexByte(sess, ';'); semi != -1 {
+		sess = sess[:semi]
+	}
+	c.session = strings.TrimSpace(sess)
+}
+
+func listenPair() (net.PacketConn, net.PacketConn, int, int, error) {
+	for range 16 {
+		a, err := net.ListenPacket("udp", ":0")
+		if err != nil {
+			return nil, nil, 0, 0, err
+		}
+		b, err := net.ListenPacket("udp", ":0")
+		if err != nil {
+			_ = a.Close()
+			return nil, nil, 0, 0, err
+		}
+		pa := a.LocalAddr().(*net.UDPAddr).Port
+		pb := b.LocalAddr().(*net.UDPAddr).Port
+		if pa%2 == 0 && pb == pa+1 {
+			return a, b, pa, pb, nil
+		}
+		_ = a.Close()
+		_ = b.Close()
+	}
+
+	a, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	b, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		_ = a.Close()
+		return nil, nil, 0, 0, err
+	}
+	pa := a.LocalAddr().(*net.UDPAddr).Port
+	pb := b.LocalAddr().(*net.UDPAddr).Port
+	return a, b, pa, pb, nil
+}
+
+func udpServerPort(trans string) int {
+	for _, part := range strings.Split(trans, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "server_port=") {
+			ports := strings.TrimPrefix(part, "server_port=")
+			if dash := strings.IndexByte(ports, '-'); dash != -1 {
+				ports = ports[:dash]
+			}
+			if p, err := strconv.Atoi(strings.TrimSpace(ports)); err == nil {
+				return p
+			}
+		}
+	}
+	return 0
+}
+
+func (c *Client) setupUDP(ctx context.Context) error {
+	rtpConn, rtcpConn, rtpPort, rtcpPort, err := listenPair()
+	if err != nil {
+		return fmt.Errorf("setup udp listen: %w", err)
+	}
+
+	req := &Request{
+		Method: "SETUP",
+		URI:    c.Track.Control,
+		Headers: map[string]string{
+			"Transport": fmt.Sprintf("RTP/AVP;unicast;client_port=%d-%d", rtpPort, rtcpPort),
+		},
+	}
+
+	res, err := c.roundTrip(ctx, req)
+	if err != nil {
+		_ = rtpConn.Close()
+		_ = rtcpConn.Close()
+		return fmt.Errorf("setup failed: %w", err)
+	}
+	if res.StatusCode != 200 {
+		_ = rtpConn.Close()
+		_ = rtcpConn.Close()
+		return fmt.Errorf("setup rejected: %d %s", res.StatusCode, res.StatusMessage)
+	}
+	if udpServerPort(res.Header("Transport")) == 0 {
+		_ = rtpConn.Close()
+		_ = rtcpConn.Close()
+		return fmt.Errorf("setup udp: server did not provide server_port")
+	}
+
+	c.storeSession(res)
+	c.udpRTP = rtpConn
+	c.udpRTCP = rtcpConn
+	c.udp = true
+	return nil
+}
+
+func (c *Client) setupTCP(ctx context.Context) error {
 	req := &Request{
 		Method: "SETUP",
 		URI:    c.Track.Control,
@@ -180,7 +311,7 @@ func (c *Client) Setup(ctx context.Context) error {
 		},
 	}
 
-	res, err := c.send(ctx, req)
+	res, err := c.roundTrip(ctx, req)
 	if err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
@@ -188,13 +319,7 @@ func (c *Client) Setup(ctx context.Context) error {
 		return fmt.Errorf("setup rejected: %d %s", res.StatusCode, res.StatusMessage)
 	}
 
-	sess := res.Header("Session")
-	if sess != "" {
-		if semi := strings.IndexByte(sess, ';'); semi != -1 {
-			sess = sess[:semi]
-		}
-		c.session = strings.TrimSpace(sess)
-	}
+	c.storeSession(res)
 
 	trans := res.Header("Transport")
 	for _, part := range strings.Split(trans, ";") {
@@ -223,7 +348,7 @@ func (c *Client) Play(ctx context.Context) error {
 		},
 	}
 
-	res, err := c.send(ctx, req)
+	res, err := c.roundTrip(ctx, req)
 	if err != nil {
 		return fmt.Errorf("play failed: %w", err)
 	}
@@ -234,6 +359,10 @@ func (c *Client) Play(ctx context.Context) error {
 }
 
 func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
+	if c.udp {
+		return c.readUDP(ctx)
+	}
+
 	if d, ok := ctx.Deadline(); ok {
 		_ = c.conn.SetReadDeadline(d)
 	}
@@ -279,6 +408,44 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 	}
 }
 
+func (c *Client) readUDP(ctx context.Context) (*Frame, error) {
+	if d, ok := ctx.Deadline(); ok {
+		_ = c.udpRTP.SetReadDeadline(d)
+	}
+
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.udpRTP.SetReadDeadline(time.Now())
+	})
+	defer stop()
+
+	if c.udpBuf == nil {
+		c.udpBuf = make([]byte, 64*1024)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		n, _, err := c.udpRTP.ReadFrom(c.udpBuf)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		}
+		if n <= 0 {
+			continue
+		}
+
+		payload := make([]byte, n)
+		copy(payload, c.udpBuf[:n])
+		return &Frame{Channel: c.rtpChannel, Payload: payload}, nil
+	}
+}
+
 func (c *Client) Teardown(ctx context.Context) error {
 	if c.session == "" {
 		return nil
@@ -296,6 +463,12 @@ func (c *Client) RTPChannel() int {
 }
 
 func (c *Client) Close() error {
+	if c.udpRTP != nil {
+		_ = c.udpRTP.Close()
+	}
+	if c.udpRTCP != nil {
+		_ = c.udpRTCP.Close()
+	}
 	if c.conn != nil {
 		return c.conn.Close()
 	}

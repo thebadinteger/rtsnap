@@ -1,6 +1,10 @@
 package rtsnap
 
-import "time"
+import (
+	"time"
+
+	"github.com/thebadinteger/rtsnap/pkg/rtsp"
+)
 
 type Codec string
 
@@ -11,12 +15,21 @@ const (
 	CodecMJPEG Codec = "mjpeg"
 )
 
+type Transport = rtsp.Transport
+
+const (
+	TransportTCP  = rtsp.TransportTCP
+	TransportUDP  = rtsp.TransportUDP
+	TransportAuto = rtsp.TransportAuto
+)
+
 type Options struct {
-	Username string
-	Password string
-	Timeout  time.Duration
-	Codec    Codec
-	Fast     bool
+	Username  string
+	Password  string
+	Timeout   time.Duration
+	Codec     Codec
+	Transport Transport
+	Fast      bool
 }
 
 type Option func(*Options)
@@ -43,5 +56,11 @@ func WithCodec(c Codec) Option {
 func WithFast() Option {
 	return func(o *Options) {
 		o.Fast = true
+	}
+}
+
+func WithTransport(t Transport) Option {
+	return func(o *Options) {
+		o.Transport = t
 	}
 }

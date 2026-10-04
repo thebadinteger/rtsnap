@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -23,10 +24,36 @@ type mockServer struct {
 	password string
 	realm    string
 	nonce    string
+	authLate bool
 
 	codec   string
 	packets [][]byte
 	noVideo bool
+	udp     bool
+	drop    map[int]bool
+
+	udpConn   net.PacketConn
+	udpTarget *net.UDPAddr
+}
+
+func udpClientPort(trans string) (string, int) {
+	i := strings.Index(trans, "client_port=")
+	if i == -1 {
+		return "", 0
+	}
+	rest := trans[i+len("client_port="):]
+	if end := strings.IndexAny(rest, "; \r\n"); end != -1 {
+		rest = rest[:end]
+	}
+	first := rest
+	if dash := strings.IndexByte(rest, '-'); dash != -1 {
+		first = rest[:dash]
+	}
+	p, err := strconv.Atoi(strings.TrimSpace(first))
+	if err != nil || p <= 0 {
+		return "", 0
+	}
+	return strings.TrimSpace(rest), p
 }
 
 func newMockServer(s *mockServer) (*mockServer, error) {
@@ -59,6 +86,9 @@ func (s *mockServer) Close() {
 	if !s.closed {
 		s.closed = true
 		s.listener.Close()
+		if s.udpConn != nil {
+			_ = s.udpConn.Close()
+		}
 	}
 }
 
@@ -145,6 +175,7 @@ func (s *mockServer) handle(conn net.Conn) {
 		uri := parts[1]
 
 		authHeader := ""
+		transportHeader := ""
 		for {
 			h, err := reader.ReadString('\n')
 			if err != nil || strings.TrimSpace(h) == "" {
@@ -156,9 +187,12 @@ func (s *mockServer) handle(conn net.Conn) {
 			if strings.HasPrefix(h, "Authorization:") {
 				authHeader = strings.TrimSpace(strings.TrimPrefix(h, "Authorization:"))
 			}
+			if strings.HasPrefix(h, "Transport:") {
+				transportHeader = strings.TrimSpace(strings.TrimPrefix(h, "Transport:"))
+			}
 		}
 
-		if !s.verifyAuth(method, uri, authHeader) {
+		if !(s.authLate && method == "DESCRIBE") && !s.verifyAuth(method, uri, authHeader) {
 			var wwwAuth string
 			if s.authMode == "basic" {
 				wwwAuth = fmt.Sprintf(`Basic realm="%s"`, s.realm)
@@ -193,6 +227,25 @@ func (s *mockServer) handle(conn net.Conn) {
 			_, _ = conn.Write([]byte(resp))
 
 		case "SETUP":
+			if s.udp {
+				if pair, clientPort := udpClientPort(transportHeader); clientPort > 0 {
+					host, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+					target, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(clientPort)))
+					if err == nil {
+						udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+						if err == nil {
+							serverPort := udpConn.LocalAddr().(*net.UDPAddr).Port
+							s.mu.Lock()
+							s.udpConn = udpConn
+							s.udpTarget = target
+							s.mu.Unlock()
+							resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nSession: test1234\r\nTransport: RTP/AVP;unicast;client_port=%s;server_port=%d-%d;ssrc=11223344\r\n\r\n", cseq, pair, serverPort, serverPort)
+							_, _ = conn.Write([]byte(resp))
+							continue
+						}
+					}
+				}
+			}
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nSession: test1234\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n", cseq)
 			_, _ = conn.Write([]byte(resp))
 
@@ -204,7 +257,18 @@ func (s *mockServer) handle(conn net.Conn) {
 				continue
 			}
 
-			for _, pkt := range s.packets {
+			s.mu.Lock()
+			udpConn, udpTarget := s.udpConn, s.udpTarget
+			s.mu.Unlock()
+
+			for i, pkt := range s.packets {
+				if s.drop[i] {
+					continue
+				}
+				if udpConn != nil && udpTarget != nil {
+					_, _ = udpConn.WriteTo(pkt, udpTarget)
+					continue
+				}
 				length := len(pkt)
 				frameHdr := []byte{0x24, 0x00, byte(length >> 8), byte(length)}
 				_, _ = conn.Write(frameHdr)
