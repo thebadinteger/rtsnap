@@ -50,7 +50,7 @@ func TestQueryStream(t *testing.T) {
 		codec: "h264",
 	})
 	if err != nil {
-		t.Fatalf("start mock server: %v", err)
+		t.Fatalf("started mock server: %v", err)
 	}
 	defer srv.Close()
 
