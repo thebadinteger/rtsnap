@@ -9,9 +9,9 @@ var mbPool sync.Pool
 
 func getMBs(count int) []MBData {
 	if v := mbPool.Get(); v != nil {
-		buf := v.([]MBData)
-		if cap(buf) >= count {
-			buf = buf[:count]
+		pp := v.(*[]MBData)
+		if cap(*pp) >= count {
+			buf := (*pp)[:count]
 			clear(buf)
 			return buf
 		}
@@ -21,7 +21,8 @@ func getMBs(count int) []MBData {
 
 func putMBs(buf []MBData) {
 	if cap(buf) > 0 {
-		mbPool.Put(buf[:0])
+		buf = buf[:0]
+		mbPool.Put(&buf)
 	}
 }
 
