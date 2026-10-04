@@ -1,0 +1,14 @@
+run:
+  timeout: 5m
+  concurrency: 4
+
+linters:
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  exclude-dirs:
+    - src
