@@ -20,7 +20,7 @@
 - [License](#license)
 
 ## Features:  
-- Pure Go & Zero Dependencies
+- No CGO & Zero Dependencies
 - Codecs support: `H.264 (AVC), H.265 (HEVC), MJPEG`
 - Basic and Digest auth support
 - Transports: `TCP interleaved, UDP unicast` 

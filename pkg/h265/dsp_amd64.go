@@ -60,38 +60,7 @@ func idctCols8AVX2(dst, src, m *int32, n, mstride, shift int, rnd, lo, hi int32)
 func predAngular8AVX2(dst *uint8, stride int, ref *int32, angle, n int)
 
 //go:noescape
-func sse8AVX2(src *uint8, srcStride int, block *uint8, blockStride, n int) int64
-
-//go:noescape
-func quantize8AVX2(dst, src *int32, count int, scale, offset int32, qbits int)
-
-//go:noescape
-func satd16x8AVX2(src *uint8, srcStride int, pred *uint8, predStride int) int64
-
-//go:noescape
 func transpose8AVX2(dst, src *int32, n int)
-
-//go:noescape
-func forwardTransform8AVX2(dst, src, m *int32, n, shift1, shift2 int)
-
-//go:noescape
-func forwardTransform8AVX512(dst, src, m *int32, n, shift1, shift2 int)
-
-var forwardTransformMatrix = func() [4][32 * 32]int32 {
-	var m [4][32 * 32]int32
-
-	for p, n := range [4]int{4, 8, 16, 32} {
-		stride := 32 / n
-
-		for x := range n {
-			for k := range n {
-				m[p][x*n+k] = int32(transMatrix[k*stride][x])
-			}
-		}
-	}
-
-	return m
-}()
 
 //go:noescape
 func dequant32AVX2(coef *int32, m *uint8, n int, ls, rnd, sh, lo, hi int32)
@@ -147,30 +116,6 @@ func dspInit(d *dspContext) {
 
 	transposeAsm = func(dst, src []int32, n int) {
 		transpose8AVX2(&dst[0], &src[0], n)
-	}
-
-	satd16x8Asm = func(src []uint8, srcStride int, pred []uint8, predStride int) int64 {
-		return satd16x8AVX2(&src[0], srcStride, &pred[0], predStride)
-	}
-
-	sse8Asm = func(src []uint8, srcStride int, block []uint8, blockStride, n int) int64 {
-		return sse8AVX2(&src[0], srcStride, &block[0], blockStride, n)
-	}
-
-	quantize8Asm = func(dst, src []int32, count int, scale, offset int32, qbits int) {
-		quantize8AVX2(&dst[0], &src[0], count, scale, offset, qbits)
-	}
-
-	forwardTransform8Asm = func(dst, src []int32, n int) {
-		if hasAVX512 && n >= 16 {
-			forwardTransform8AVX512(&dst[0], &src[0], &forwardTransformMatrix[log2(n)-2][0],
-				n, log2(n)-1, log2(n)+6)
-
-			return
-		}
-
-		forwardTransform8AVX2(&dst[0], &src[0], &forwardTransformMatrix[log2(n)-2][0],
-			n, log2(n)-1, log2(n)+6)
 	}
 
 	oddAsm = func(out, in []int32, stride int) {

@@ -11,8 +11,6 @@ type dspContext struct {
 
 var oddAsm func(out, in []int32, stride int)
 
-var forwardTransform8Asm func(dst, src []int32, n int)
-
 var (
 	deblockStrongAsm func(p []uint8, pitch int, tc0, tc1, flags int32)
 	deblockNormalAsm func(p []uint8, pitch int, tc0, tc1, nd, flags int32)
@@ -41,12 +39,6 @@ var (
 var dequant32Asm func(coef []int32, m []uint8, ls, rnd int32, sh int, lo, hi int32)
 
 var idctColsAsm func(dst, src []int32, n int, rnd int32, shift int, lo, hi int32)
-
-var sse8Asm func(src []uint8, srcStride int, block []uint8, blockStride, n int) int64
-
-var quantize8Asm func(dst, src []int32, count int, scale, offset int32, qbits int)
-
-var satd16x8Asm func(src []uint8, srcStride int, pred []uint8, predStride int) int64
 
 var transposeAsm func(dst, src []int32, n int)
 

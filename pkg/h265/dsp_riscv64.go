@@ -36,15 +36,6 @@ func idctColsRVV(dst, src, m *int32, n, mstride, shift int, rnd, lo, hi int32)
 func predAngular8RVV(dst *uint8, stride int, ref *int32, angle, n int)
 
 //go:noescape
-func sse8RVV(src *uint8, srcStride int, block *uint8, blockStride, n int) int64
-
-//go:noescape
-func quantize8RVV(dst, src *int32, count int, scale, offset int32, qbits int)
-
-//go:noescape
-func satd16x8RVV(src *uint8, srcStride int, pred *uint8, predStride int) int64
-
-//go:noescape
 func deblockStrong8RVV(p *uint8, pitch int, tc0, tc1, flags int32)
 
 //go:noescape
@@ -58,25 +49,6 @@ func turnOut8RVV(dst *uint8, stride int, src *uint8)
 
 //go:noescape
 func transposeRVV(dst, src *int32, n int)
-
-//go:noescape
-func forwardTransform8RVV(dst, src, m *int32, n, shift1, shift2 int)
-
-var forwardTransformMatrixRVV = func() [4][32 * 32]int32 {
-	var m [4][32 * 32]int32
-
-	for p, n := range [4]int{4, 8, 16, 32} {
-		stride := 32 / n
-
-		for x := range n {
-			for k := range n {
-				m[p][x*n+k] = int32(transMatrix[k*stride][x])
-			}
-		}
-	}
-
-	return m
-}()
 
 //go:noescape
 func dequant32RVV(coef *int32, m *uint8, n int, ls, rnd, sh, lo, hi int32)
@@ -113,23 +85,6 @@ func dspInit(d *dspContext) {
 
 	deblockTurnOut = func(dst []uint8, stride int, src []uint8) {
 		turnOut8RVV(&dst[0], stride, &src[0])
-	}
-
-	satd16x8Asm = func(src []uint8, srcStride int, pred []uint8, predStride int) int64 {
-		return satd16x8RVV(&src[0], srcStride, &pred[0], predStride)
-	}
-
-	sse8Asm = func(src []uint8, srcStride int, block []uint8, blockStride, n int) int64 {
-		return sse8RVV(&src[0], srcStride, &block[0], blockStride, n)
-	}
-
-	quantize8Asm = func(dst, src []int32, count int, scale, offset int32, qbits int) {
-		quantize8RVV(&dst[0], &src[0], count, scale, offset, qbits)
-	}
-
-	forwardTransform8Asm = func(dst, src []int32, n int) {
-		forwardTransform8RVV(&dst[0], &src[0], &forwardTransformMatrixRVV[log2(n)-2][0],
-			n, log2(n)-1, log2(n)+6)
 	}
 
 	oddAsm = func(out, in []int32, stride int) {
