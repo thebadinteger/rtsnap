@@ -141,7 +141,7 @@ func playTrack(ctx context.Context, client *rtsp.Client, codec Codec) error {
 }
 
 func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error) {
-	ctx, client, _, cancel, err := connect(ctx, rtspURL, opts...)
+	_, client, _, cancel, err := connect(ctx, rtspURL, opts...)
 	if err != nil {
 		return nil, err
 	}

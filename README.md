@@ -180,7 +180,7 @@ Transport is TCP interleaved only, UDP is not supported
 `rtsps` skips TLS certificate verification because cameras use self-signed certificates
 
 ## Documentation
-[Open documentation](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
+Docs live on **[pkg.go.dev/github.com/thebadinteger/rtsnap](https://pkg.go.dev/github.com/thebadinteger/rtsnap)**
 
 ## License  
 Made by [badinteger](https://github.com/thebadinteger) `[MIT License]`  
