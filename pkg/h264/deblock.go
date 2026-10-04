@@ -1,9 +1,5 @@
 package h264
 
-// H.264 deblocking filter lookup tables (Tables 8-16 to 8-18 of the spec).
-// Indexed by indexA/indexB = qp + 52 + offset. First 52 entries are zero-padding,
-// entries 52-103 are the actual values, entries 104-155 are clamped to max.
-
 var alphaTable = [156]int{
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -38,7 +34,6 @@ var betaTable = [156]int{
 	18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18,
 }
 
-// tc0Table[indexA][bS]. Column 0 is bS=0 (always -1), columns 1-3 are bS=1,2,3.
 var tc0Table = [156][4]int{
 	{-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0},
 	{-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0}, {-1, 0, 0, 0},
@@ -69,7 +64,6 @@ var tc0Table = [156][4]int{
 	{-1, 13, 17, 25}, {-1, 13, 17, 25}, {-1, 13, 17, 25}, {-1, 13, 17, 25},
 }
 
-// Chroma QP mapping table (Table 8-15 of the spec).
 var chromaQPFromLuma = [52]int{
 	0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
 	20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 34,
@@ -108,8 +102,6 @@ func absInt(x int) int {
 	return x
 }
 
-// Deblock applies the H.264 deblocking filter to the
-// filterOffsetA and filterOffsetB are SliceAlphaC0OffsetDiv2*2 and SliceBetaOffsetDiv2*2.
 func Deblock(f *Frame, sc *SliceContext, filterOffsetA, filterOffsetB int) {
 	a := 52 + filterOffsetA
 	b := 52 + filterOffsetB
@@ -133,9 +125,6 @@ func Deblock(f *Frame, sc *SliceContext, filterOffsetA, filterOffsetB int) {
 
 		qpc := chromaQPForDeblock(qp, chromaQpOff)
 
-		// === VERTICAL EDGES (filtering across vertical boundaries) ===
-
-		// Edge 0: left MB boundary (bS=4, strong intra filter)
 		if hasLeft {
 			qpLeft := sc.MBs[mbIdx-1].QPY
 			qpAvg := (qp + qpLeft + 1) >> 1
@@ -147,23 +136,16 @@ func Deblock(f *Frame, sc *SliceContext, filterOffsetA, filterOffsetB int) {
 			filterChromaIntraV(f.Cr, f.StrideC, cx0, cy0, qpcAvg+a, qpcAvg+b)
 		}
 
-		// Internal vertical luma edges (bS=3, normal filter)
 		if is8x8 {
-			// 8x8 DCT: only one internal edge at x+8
 			filterLumaNormalV(f.Y, f.StrideY, x0+8, y0, qp+a, qp+b, 3)
 		} else {
-			// 4x4: three internal edges at x+4, x+8, x+12
 			filterLumaNormalV(f.Y, f.StrideY, x0+4, y0, qp+a, qp+b, 3)
 			filterLumaNormalV(f.Y, f.StrideY, x0+8, y0, qp+a, qp+b, 3)
 			filterLumaNormalV(f.Y, f.StrideY, x0+12, y0, qp+a, qp+b, 3)
 		}
-		// Internal vertical chroma edge at cx+4 (bS=3)
 		filterChromaNormalV(f.Cb, f.StrideC, cx0+4, cy0, qpc+a, qpc+b, 3)
 		filterChromaNormalV(f.Cr, f.StrideC, cx0+4, cy0, qpc+a, qpc+b, 3)
 
-		// === HORIZONTAL EDGES (filtering across horizontal boundaries) ===
-
-		// Edge 0: top MB boundary (bS=4, strong intra filter)
 		if hasTop {
 			qpTop := sc.MBs[mbIdx-sc.MBWidth].QPY
 			qpAvg := (qp + qpTop + 1) >> 1
@@ -175,7 +157,6 @@ func Deblock(f *Frame, sc *SliceContext, filterOffsetA, filterOffsetB int) {
 			filterChromaIntraH(f.Cr, f.StrideC, cx0, cy0, qpcAvg+a, qpcAvg+b)
 		}
 
-		// Internal horizontal luma edges (bS=3, normal filter)
 		if is8x8 {
 			filterLumaNormalH(f.Y, f.StrideY, x0, y0+8, qp+a, qp+b, 3)
 		} else {
@@ -183,15 +164,11 @@ func Deblock(f *Frame, sc *SliceContext, filterOffsetA, filterOffsetB int) {
 			filterLumaNormalH(f.Y, f.StrideY, x0, y0+8, qp+a, qp+b, 3)
 			filterLumaNormalH(f.Y, f.StrideY, x0, y0+12, qp+a, qp+b, 3)
 		}
-		// Internal horizontal chroma edge at cy+4 (bS=3)
 		filterChromaNormalH(f.Cb, f.StrideC, cx0, cy0+4, qpc+a, qpc+b, 3)
 		filterChromaNormalH(f.Cr, f.StrideC, cx0, cy0+4, qpc+a, qpc+b, 3)
 	}
 }
 
-// filterLumaIntraV filters a vertical luma edge with the strong intra filter (bS=4).
-// edgeX is the x-coordinate of q0 (first pixel to the right of the edge).
-// Processes 16 rows starting at y0.
 func filterLumaIntraV(plane []uint8, stride, edgeX, y0, indexA, indexB int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
@@ -237,8 +214,6 @@ func filterLumaIntraV(plane []uint8, stride, edgeX, y0, indexA, indexB int) {
 	}
 }
 
-// filterLumaIntraH filters a horizontal luma edge with the strong intra filter (bS=4).
-// edgeY is the y-coordinate of q0. Processes 16 columns starting at x0.
 func filterLumaIntraH(plane []uint8, stride, x0, edgeY, indexA, indexB int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
@@ -284,8 +259,6 @@ func filterLumaIntraH(plane []uint8, stride, x0, edgeY, indexA, indexB int) {
 	}
 }
 
-// filterLumaNormalV filters a vertical luma edge with the normal filter (bS < 4).
-// edgeX is the x-coordinate of q0. Processes 16 rows starting at y0.
 func filterLumaNormalV(plane []uint8, stride, edgeX, y0, indexA, indexB, bS int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
@@ -332,8 +305,6 @@ func filterLumaNormalV(plane []uint8, stride, edgeX, y0, indexA, indexB, bS int)
 	}
 }
 
-// filterLumaNormalH filters a horizontal luma edge with the normal filter (bS < 4).
-// edgeY is the y-coordinate of q0. Processes 16 columns starting at x0.
 func filterLumaNormalH(plane []uint8, stride, x0, edgeY, indexA, indexB, bS int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
@@ -380,8 +351,6 @@ func filterLumaNormalH(plane []uint8, stride, x0, edgeY, indexA, indexB, bS int)
 	}
 }
 
-// filterChromaIntraV filters a vertical chroma edge with the strong intra filter (bS=4).
-// edgeX is the x-coordinate of q0. Processes 8 rows starting at y0.
 func filterChromaIntraV(plane []uint8, stride, edgeX, y0, indexA, indexB int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
@@ -406,8 +375,6 @@ func filterChromaIntraV(plane []uint8, stride, edgeX, y0, indexA, indexB int) {
 	}
 }
 
-// filterChromaIntraH filters a horizontal chroma edge with the strong intra filter (bS=4).
-// edgeY is the y-coordinate of q0. Processes 8 columns starting at x0.
 func filterChromaIntraH(plane []uint8, stride, x0, edgeY, indexA, indexB int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
@@ -432,8 +399,6 @@ func filterChromaIntraH(plane []uint8, stride, x0, edgeY, indexA, indexB int) {
 	}
 }
 
-// filterChromaNormalV filters a vertical chroma edge with the normal filter (bS < 4).
-// edgeX is the x-coordinate of q0. Processes 8 rows starting at y0.
 func filterChromaNormalV(plane []uint8, stride, edgeX, y0, indexA, indexB, bS int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
@@ -464,8 +429,6 @@ func filterChromaNormalV(plane []uint8, stride, edgeX, y0, indexA, indexB, bS in
 	}
 }
 
-// filterChromaNormalH filters a horizontal chroma edge with the normal filter (bS < 4).
-// edgeY is the y-coordinate of q0. Processes 8 columns starting at x0.
 func filterChromaNormalH(plane []uint8, stride, x0, edgeY, indexA, indexB, bS int) {
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]

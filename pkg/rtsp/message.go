@@ -14,7 +14,6 @@ const (
 	magicByte = 0x24
 )
 
-// request represents an rtsp request
 type Request struct {
 	Method  string
 	URI     string
@@ -39,7 +38,6 @@ func (r *Request) Write(w io.Writer) error {
 	return err
 }
 
-// response represents an rtsp response
 type Response struct {
 	StatusCode    int
 	StatusMessage string
@@ -118,7 +116,6 @@ func readResponse(br *bufio.Reader) (*Response, error) {
 	return res, nil
 }
 
-// frame represents an interleaved binary data frame
 type Frame struct {
 	Channel int
 	Payload []byte

@@ -42,12 +42,11 @@ func TestRTPPacketUnmarshal(t *testing.T) {
 func TestH264DepacketizerFUA(t *testing.T) {
 	d := NewH264Depacketizer()
 
-	// fragment 1 (start)
 	pkt1 := &Packet{
 		Payload: []byte{
-			0x7c,       // indicator: F=0, NRI=3, Type=28
-			0x85,       // header: S=1, E=0, Type=5 (IDR)
-			0x01, 0x02, // data
+			0x7c,
+			0x85,
+			0x01, 0x02,
 		},
 	}
 	nalus, err := d.Decode(pkt1)
@@ -58,13 +57,12 @@ func TestH264DepacketizerFUA(t *testing.T) {
 		t.Fatalf("expected 0 nalus on start fragment, got %d", len(nalus))
 	}
 
-	// fragment 2 (end)
 	pkt2 := &Packet{
 		Marker: true,
 		Payload: []byte{
-			0x7c,       // indicator
-			0x45,       // header: S=0, E=1, Type=5
-			0x03, 0x04, // data
+			0x7c,
+			0x45,
+			0x03, 0x04,
 		},
 	}
 	nalus, err = d.Decode(pkt2)
@@ -84,12 +82,11 @@ func TestH264DepacketizerFUA(t *testing.T) {
 func TestH265DepacketizerFU(t *testing.T) {
 	d := NewH265Depacketizer()
 
-	// fragment 1 (start)
 	pkt1 := &Packet{
 		Payload: []byte{
-			49 << 1, 0x01, // payload hdr: type=49 (FU)
-			0x80 | 19,  // FU hdr: S=1, E=0, type=19 (IDR)
-			0x10, 0x20, // data
+			49 << 1, 0x01,
+			0x80 | 19,
+			0x10, 0x20,
 		},
 	}
 	nalus, err := d.Decode(pkt1)
@@ -100,13 +97,12 @@ func TestH265DepacketizerFU(t *testing.T) {
 		t.Fatalf("expected 0 nalus on start fragment, got %d", len(nalus))
 	}
 
-	// fragment 2 (end)
 	pkt2 := &Packet{
 		Marker: true,
 		Payload: []byte{
 			49 << 1, 0x01,
-			0x40 | 19,  // FU hdr: S=0, E=1, type=19
-			0x30, 0x40, // data
+			0x40 | 19,
+			0x30, 0x40,
 		},
 	}
 	nalus, err = d.Decode(pkt2)
@@ -126,17 +122,16 @@ func TestH265DepacketizerFU(t *testing.T) {
 func TestMJPEGDepacketizer(t *testing.T) {
 	d := NewMJPEGDepacketizer()
 
-	// rfc 2435 single packet mjpeg frame with Q=50, width=16 (2*8), height=16 (2*8)
 	pkt := &Packet{
 		Marker: true,
 		Payload: []byte{
-			0x00,             // type specific
-			0x00, 0x00, 0x00, // offset 0
-			0x01,       // type 1 (4:2:0)
-			50,         // Q=50
-			2,          // width = 2 * 8 = 16
-			2,          // height = 2 * 8 = 16
-			0x00, 0x00, // empty scan data
+			0x00,
+			0x00, 0x00, 0x00,
+			0x01,
+			50,
+			2,
+			2,
+			0x00, 0x00,
 		},
 	}
 
@@ -148,7 +143,6 @@ func TestMJPEGDepacketizer(t *testing.T) {
 		t.Fatal("expected jpeg bytes")
 	}
 
-	// verify jpeg header magic
 	if jpegBytes[0] != 0xFF || jpegBytes[1] != 0xD8 {
 		t.Fatalf("invalid jpeg start: %02x %02x", jpegBytes[0], jpegBytes[1])
 	}
@@ -156,8 +150,6 @@ func TestMJPEGDepacketizer(t *testing.T) {
 		t.Fatalf("invalid jpeg end: %02x %02x", jpegBytes[len(jpegBytes)-2], jpegBytes[len(jpegBytes)-1])
 	}
 
-	// test decoding with standard image/jpeg
 	_, err = jpeg.Decode(bytes.NewReader(jpegBytes))
-	// empty scan data might cause eof or partial decode, but structure is valid
 	t.Logf("jpeg constructed size: %d bytes, decode status: %v", len(jpegBytes), err)
 }

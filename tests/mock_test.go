@@ -18,13 +18,13 @@ type mockServer struct {
 	mu       sync.Mutex
 	closed   bool
 
-	authMode string // none, basic, digest, digest-sha256
+	authMode string
 	username string
 	password string
 	realm    string
 	nonce    string
 
-	codec   string // h264, h265, mjpeg
+	codec   string
 	packets [][]byte
 	noVideo bool
 }
@@ -109,7 +109,6 @@ func (s *mockServer) verifyAuth(method, uri, authHeader string) bool {
 			return params["response"] == expected
 		}
 
-		// md5 digest
 		h1 := md5.Sum([]byte(s.username + ":" + s.realm + ":" + s.password))
 		ha1 := hex.EncodeToString(h1[:])
 		h2 := md5.Sum([]byte(method + ":" + uri))
@@ -159,7 +158,6 @@ func (s *mockServer) handle(conn net.Conn) {
 			}
 		}
 
-		// check auth for describe, setup, play
 		if !s.verifyAuth(method, uri, authHeader) {
 			var wwwAuth string
 			if s.authMode == "basic" {
@@ -170,14 +168,14 @@ func (s *mockServer) handle(conn net.Conn) {
 				wwwAuth = fmt.Sprintf(`Digest realm="%s", nonce="%s", qop="auth"`, s.realm, s.nonce)
 			}
 			resp := fmt.Sprintf("RTSP/1.0 401 Unauthorized\r\nCSeq: %s\r\nWWW-Authenticate: %s\r\n\r\n", cseq, wwwAuth)
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 			continue
 		}
 
 		switch method {
 		case "OPTIONS":
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nPublic: DESCRIBE, SETUP, TEARDOWN, PLAY\r\n\r\n", cseq)
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 
 		case "DESCRIBE":
 			var sdp string
@@ -192,31 +190,30 @@ func (s *mockServer) handle(conn net.Conn) {
 				sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\n"
 			}
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s", cseq, len(sdp), sdp)
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 
 		case "SETUP":
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nSession: test1234\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n", cseq)
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 
 		case "PLAY":
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nSession: test1234\r\n\r\n", cseq)
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 
 			if s.noVideo {
 				continue
 			}
 
-			// write all configured packets
 			for _, pkt := range s.packets {
 				length := len(pkt)
 				frameHdr := []byte{0x24, 0x00, byte(length >> 8), byte(length)}
-				conn.Write(frameHdr)
-				conn.Write(pkt)
+				_, _ = conn.Write(frameHdr)
+				_, _ = conn.Write(pkt)
 			}
 
 		case "TEARDOWN":
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\n\r\n", cseq)
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 			return
 		}
 	}

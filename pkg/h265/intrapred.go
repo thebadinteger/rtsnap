@@ -11,19 +11,15 @@ const (
 	intraVer    = 26
 )
 
-// Table 8-4, indexed by predModeIntra - 2.
 var intraPredAngle = [33]int32{
 	32, 26, 21, 17, 13, 9, 5, 2, 0, -2, -5, -9, -13, -17, -21, -26, -32,
 	-26, -21, -17, -13, -9, -5, -2, 0, 2, 5, 9, 13, 17, 21, 26, 32,
 }
 
-// Table 8-5, indexed by predModeIntra - 11.
 var intraInvAngle = [15]int32{
 	-4096, -1638, -910, -630, -482, -390, -315, -256, -315, -390, -482, -630, -910, -1638, -4096,
 }
 
-// refSamples holds p[][] flattened in the order 8.4.4.2.2 scans it: the left
-// column bottom to top, the corner, then the top row left to right.
 type refSamples struct {
 	s [4*32 + 1]int32
 	n int
@@ -35,12 +31,6 @@ func (r *refSamples) left(y int) int32       { return r.s[2*r.n-1-y] }
 func (r *refSamples) setTop(x int, v int32)  { r.s[2*r.n+1+x] = v }
 func (r *refSamples) setLeft(y int, v int32) { r.s[2*r.n-1-y] = v }
 
-func (r *refSamples) copyFrom(src *refSamples) {
-	r.n = src.n
-	copy(r.s[:4*src.n+1], src.s[:4*src.n+1])
-}
-
-// substitute is 8.4.4.2.2. avail runs in the same order as s.
 func (r *refSamples) substitute(avail []bool, bitDepth int) {
 	n := 4*r.n + 1
 
@@ -72,7 +62,6 @@ func (r *refSamples) substitute(avail []bool, bitDepth int) {
 	}
 }
 
-// filterFlag is the derivation in 8.4.4.2.3.
 func filterFlag(mode, n, cIdx int, sps *sps) bool {
 	if cIdx != 0 && sps.chromaArrayType() != 3 {
 		return false
@@ -106,7 +95,6 @@ func abs(v int) int {
 	return v
 }
 
-// filterRef is 8.4.4.2.3.
 func filterRef(r *refSamples, mode, cIdx, bitDepth int, sps *sps) {
 	if sps.intraSmoothingDisabled || !filterFlag(mode, r.n, cIdx, sps) {
 		return
@@ -154,7 +142,6 @@ func clip1[P pixel](v int32, bitDepth int) P {
 	return P(clip3(v, 0, 1<<bitDepth-1))
 }
 
-// intraPredict is 8.4.4.2.4 through 8.4.4.2.6.
 func intraPredict[P pixel](dst []P, off, stride int, r *refSamples, mode, cIdx, bitDepth int) {
 	switch {
 	case mode == intraPlanar:
@@ -232,7 +219,6 @@ func predAngular[P pixel](dst []P, off, stride int, r *refSamples, mode, cIdx, b
 
 	var ref [3 * 32 * 2]int32
 
-	// The corner sits at 2n in both r.s and ref.
 	base := 2 * n
 
 	vertical := mode >= 18
@@ -309,8 +295,6 @@ func predAngular[P pixel](dst []P, off, stride int, r *refSamples, mode, cIdx, b
 	finishAngular(dst, off, stride, r, mode, cIdx, bitDepth)
 }
 
-// predAngular8 runs the kernel. A horizontal mode is the same prediction
-// transposed, so it is taken that way and turned back.
 func predAngular8(dst []uint8, stride int, ref []int32, angle, n int, vertical bool) bool {
 	if vertical {
 		return predAngularRows(dst, stride, ref, angle, n)
@@ -333,7 +317,6 @@ func predAngular8(dst []uint8, stride int, ref []int32, angle, n int, vertical b
 	return true
 }
 
-// finishAngular is the boundary smoothing of 8.4.4.2.6.
 func finishAngular[P pixel](dst []P, off, stride int, r *refSamples, mode, cIdx, bitDepth int) {
 	n := r.n
 	if cIdx != 0 || n >= 32 {

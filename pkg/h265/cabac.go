@@ -12,16 +12,12 @@ const (
 	cabacMask = 1<<cabacBits - 1
 )
 
-// rateShift is the fraction of a bit the rate estimates count in.
 const rateShift = 15
 
 var (
 	lpsRange   [4][128]uint8
 	transState [256]uint8
 
-	// entropyBits is what one bin costs, indexed by the state with its low bit
-	// set when the bin is not the most probable symbol. Derived from
-	// rangeTabLPS, mid-range in each of its four buckets.
 	entropyBits [128]uint32
 )
 

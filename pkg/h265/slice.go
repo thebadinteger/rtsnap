@@ -515,8 +515,6 @@ func parsePredWeightTable(c *getBits, h *sliceHeader, s *sps) error {
 
 	w.chromaLog2Denom = uint8(chromaDenom)
 
-	// 7.4.7.3, WpOffsetHalfRangeC: the sample depth under high precision
-	// offsets, eight bits otherwise.
 	half := int32(128)
 	if s.highPrecisionOffsets {
 		half = 1 << (int32(s.bitDepthChroma) - 1)

@@ -2,11 +2,8 @@ package h265
 
 const numSbCoeff = 16
 
-// Table 9-43, the sig_coeff_flag context map for 4x4 blocks.
 var sigCtxMap4x4 = [16]uint8{0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8}
 
-// scanIndex is the derivation in 7.4.9.11: only small intra blocks depart from
-// the diagonal scan, and then only for near-horizontal or near-vertical modes.
 func scanIndex(log2Size, cIdx, predModeIntra int, intra bool, chromaArrayType uint32) int {
 	if !intra {
 		return scanDiag
@@ -26,8 +23,6 @@ func scanIndex(log2Size, cIdx, predModeIntra int, intra bool, chromaArrayType ui
 	}
 }
 
-// lastSigCoeffPrefix is the truncated Rice prefix of 9.3.3.2 with the context
-// derivation of 9.3.4.2.3.
 func lastSigCoeffCtx(log2Size, cIdx, binIdx int) int {
 	if cIdx == 0 {
 		return binIdx>>((log2Size+1)>>2) + 3*(log2Size-2) + (log2Size-1)>>2
@@ -58,8 +53,6 @@ func (c *cabac) lastSigCoeffSuffix(prefix int) int {
 	return (1<<n)*(2+prefix&1) + suffix
 }
 
-// coeffAbsLevelRemaining is the binarization of 9.3.3.11. rng selects the
-// limited form of 9.3.3.4 and is zero otherwise.
 func (c *cabac) coeffAbsLevelRemaining(rice, rng int) int32 {
 	limit := 32
 	if rng > 0 {
@@ -84,8 +77,6 @@ func (c *cabac) coeffAbsLevelRemaining(rice, rng int) int32 {
 	return int32((1<<k+2)<<rice) + int32(c.decodeBypassBits(k+rice))
 }
 
-// sigCtxSet is 9.3.4.2.5 with everything that is fixed for a sub-block already
-// resolved, so a coefficient costs one table lookup and an add.
 type sigCtxSet struct {
 	base     int
 	dc       int
@@ -94,7 +85,6 @@ type sigCtxSet struct {
 	is4x4    bool
 	sbDC     bool
 
-	// 9.3.4.2.5 gives a skipped block one context for every position.
 	flat bool
 }
 
@@ -155,49 +145,6 @@ func (c sigCtxSet) at(x, y int) int {
 	return c.base + int(sigCtxByCsbf[c.prevCsbf][y&3<<2|x&3])
 }
 
-// sigCoeffCtx is 9.3.4.2.5 transcribed, which sigCtxSet is held to by
-// TestSigCtxSetMatchesDerivation.
-func sigCoeffCtx(xC, yC, log2Size, cIdx, scanIdx int, prevCsbf int) int {
-	var sig int
-
-	switch {
-	case log2Size == 2:
-		sig = int(sigCtxMap4x4[yC<<2+xC])
-	case xC+yC == 0:
-		sig = 0
-	default:
-		sig = int(sigCtxByCsbf[prevCsbf][yC&3<<2|xC&3])
-
-		if cIdx == 0 {
-			if xC>>2+yC>>2 > 0 {
-				sig += 3
-			}
-
-			if log2Size == 3 {
-				if scanIdx == scanDiag {
-					sig += 9
-				} else {
-					sig += 15
-				}
-			} else {
-				sig += 21
-			}
-		} else {
-			if log2Size == 3 {
-				sig += 9
-			} else {
-				sig += 12
-			}
-		}
-	}
-
-	if cIdx == 0 {
-		return sig
-	}
-
-	return 27 + sig
-}
-
 type residualBlock struct {
 	log2Size         int
 	cIdx             int
@@ -206,9 +153,6 @@ type residualBlock struct {
 	transquantBypass bool
 }
 
-// decodeResidual is the residual_coding syntax of 7.3.8.11. coef receives the
-// transform coefficient levels in raster order and must be zeroed by the
-// caller.
 func decodeResidual(c *cabac, s *sps, p *pps, sh *sliceHeader, coef []int32,
 	b residualBlock, statCoeff *[4]uint8,
 ) (transformSkip bool, err error) {
@@ -219,8 +163,6 @@ func decodeResidual(c *cabac, s *sps, p *pps, sh *sliceHeader, coef []int32,
 		transformSkip = c.decodeBin(ctxTransformSkipFlag+min(b.cIdx, 1)) != 0
 	}
 
-	// 9.3.4.2.5 gives a block that skips the transform one significance
-	// context throughout, rather than one derived from the position.
 	flatCtx := s.transformSkipContext && (transformSkip || b.transquantBypass)
 
 	scanIdx := scanIndex(b.log2Size, b.cIdx, b.predModeIntra, b.intra, s.chromaArrayType())
@@ -328,8 +270,6 @@ func decodeResidual(c *cabac, s *sps, p *pps, sh *sliceHeader, coef []int32,
 			sig[lastScanPos] = true
 		}
 
-		// 9.3.4.2.5 varies with the coefficient only through its place inside
-		// the sub-block; everything else is fixed for the whole of it.
 		sigSet := newSigCtxSet(xS, yS, b.log2Size, b.cIdx, scanIdx, prevCsbf, flatCtx)
 
 		for k := start; k >= 0; k-- {
@@ -362,8 +302,6 @@ func anyTrue(v []bool) bool {
 	return false
 }
 
-// residualState carries the greater1 context across the sub-blocks of one
-// transform block, as 9.3.4.2.6 requires.
 type residualState struct {
 	started      bool
 	greater1Ctx  int
@@ -400,8 +338,6 @@ func decodeSubBlockLevels(c *cabac, s *sps, p *pps, coef []int32,
 
 	st.started = true
 
-	// The three passes below visit the significant coefficients only, so the
-	// positions are gathered once instead of rescanning all sixteen.
 	var posBuf [numSbCoeff]int8
 
 	npos := 0
@@ -564,9 +500,6 @@ func updateStatCoeff(stat *[4]uint8, i int, rem int32) {
 	}
 }
 
-// sigCtxByCsbf is the position part of 9.3.4.2.5, which depends only on the
-// coefficient's place within its sub-block and on the two neighbouring
-// sub-block flags. Built from the derivation rather than transcribed.
 var sigCtxByCsbf = func() [4][numSbCoeff]uint8 {
 	var t [4][numSbCoeff]uint8
 

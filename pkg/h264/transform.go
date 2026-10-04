@@ -1,17 +1,11 @@
 package h264
 
-// InverseTransform4x4 performs the 4x4 integer inverse transform (section 8.5.12).
-// Input: 16 dequantized coefficients in raster order (row*4+col).
-// Output: 16 residual samples in raster order.
-// Per spec: row transform first, then column
 func InverseTransform4x4(coeffs [16]int32) [16]int32 {
 	var block [16]int32
 	copy(block[:], coeffs[:])
 
-	// Add rounding to DC before transform (equivalent to adding 32 at each output)
 	block[0] += 32
 
-	// 1D transform on rows: for each row i, process columns 0-3
 	for i := range 4 {
 		z0 := block[i*4+0] + block[i*4+2]
 		z1 := block[i*4+0] - block[i*4+2]
@@ -24,7 +18,6 @@ func InverseTransform4x4(coeffs [16]int32) [16]int32 {
 		block[i*4+3] = z0 - z3
 	}
 
-	// 1D transform on columns
 	var result [16]int32
 	for j := range 4 {
 		z0 := block[0*4+j] + block[2*4+j]
@@ -41,12 +34,9 @@ func InverseTransform4x4(coeffs [16]int32) [16]int32 {
 	return result
 }
 
-// InverseHadamard4x4 performs the 4x4 inverse Hadamard transform
-// for Intra16x16 luma DC coefficients (section 8.5.10).
 func InverseHadamard4x4(coeffs [16]int32) [16]int32 {
 	var temp [16]int32
 
-	// 1D Hadamard on rows
 	for i := range 4 {
 		s0 := coeffs[i*4+0]
 		s1 := coeffs[i*4+1]
@@ -59,7 +49,6 @@ func InverseHadamard4x4(coeffs [16]int32) [16]int32 {
 		temp[i*4+3] = s0 - s1 + s2 - s3
 	}
 
-	// 1D Hadamard on columns
 	var result [16]int32
 	for j := range 4 {
 		f0 := temp[0*4+j]
@@ -76,8 +65,6 @@ func InverseHadamard4x4(coeffs [16]int32) [16]int32 {
 	return result
 }
 
-// InverseHadamard2x2 performs the 2x2 inverse Hadamard transform
-// for chroma DC coefficients in 4:2:0 (section 8.5.11).
 func InverseHadamard2x2(coeffs [4]int32) [4]int32 {
 	var result [4]int32
 
@@ -89,11 +76,9 @@ func InverseHadamard2x2(coeffs [4]int32) [4]int32 {
 	return result
 }
 
-// InverseTransform8x8 performs the 8x8 integer inverse transform (section 8.5.13).
 func InverseTransform8x8(coeffs [64]int32) [64]int32 {
 	var temp [64]int32
 
-	// 1D transform on rows
 	for i := range 8 {
 		a0 := coeffs[i*8+0]
 		a1 := coeffs[i*8+1]
@@ -104,7 +89,6 @@ func InverseTransform8x8(coeffs [64]int32) [64]int32 {
 		a6 := coeffs[i*8+6]
 		a7 := coeffs[i*8+7]
 
-		// 8-point butterfly
 		e0 := a0 + a4
 		e1 := -a3 + a5 - a7 - (a7 >> 1)
 		e2 := a0 - a4
@@ -133,7 +117,6 @@ func InverseTransform8x8(coeffs [64]int32) [64]int32 {
 		temp[i*8+7] = f0 - f7
 	}
 
-	// 1D transform on columns
 	var result [64]int32
 	for j := range 8 {
 		a0 := temp[0*8+j]
@@ -163,7 +146,6 @@ func InverseTransform8x8(coeffs [64]int32) [64]int32 {
 		f6 := e0 - e6
 		f7 := e7 - (e1 >> 2)
 
-		// Add rounding and right shift by 6
 		result[0*8+j] = (f0 + f7 + 32) >> 6
 		result[1*8+j] = (f2 + f5 + 32) >> 6
 		result[2*8+j] = (f4 + f3 + 32) >> 6
@@ -177,7 +159,6 @@ func InverseTransform8x8(coeffs [64]int32) [64]int32 {
 	return result
 }
 
-// Clip clips a value to the range [0, max].
 func Clip(val, max int32) int32 {
 	if val < 0 {
 		return 0

@@ -12,7 +12,7 @@ func TestAuthBasic(t *testing.T) {
 	if auth == nil {
 		t.Fatal("auth is nil")
 	}
-	header := auth.Generate("DESCRIBE", "rtsp://example.com/live")
+	header := auth.Generate("DESCRIBE", "rtsp://127.0.0.1/live")
 	if !strings.HasPrefix(header, "Basic ") {
 		t.Fatalf("unexpected basic header: %s", header)
 	}
@@ -24,7 +24,7 @@ func TestAuthDigest(t *testing.T) {
 	if auth == nil {
 		t.Fatal("auth is nil")
 	}
-	header := auth.Generate("DESCRIBE", "rtsp://192.168.1.100/ch0")
+	header := auth.Generate("DESCRIBE", "rtsp://192.168.1.100/cam")
 	if !strings.HasPrefix(header, "Digest ") {
 		t.Fatalf("unexpected digest header: %s", header)
 	}

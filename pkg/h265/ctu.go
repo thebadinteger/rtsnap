@@ -13,7 +13,6 @@ const (
 	partModenRx2N
 )
 
-// Table 8-10 for ChromaArrayType 1, indexed by qPi - 30.
 var chromaQPTable = [14]int8{29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37}
 
 func chromaQP(qPi int32, chromaArrayType uint32) int32 {
@@ -57,16 +56,12 @@ type ctuDecoder struct {
 	qpCoded  bool
 	qpDelta  int32
 
-	// 8.6.1's CuQpOffsetCb and CuQpOffsetCr, coded once per chroma
-	// quantisation group when the picture carries an offset list.
 	cuOffCoded bool
 	cuOffCb    int32
 	cuOffCr    int32
 	statCoef   [4]uint8
 	scaling    [maxScalingListSizes][maxScalingListMats][]uint8
 
-	// scalingFrom is the list d.scaling was derived from. Parsing a parameter
-	// set yields a new one, so the pointer changing is the only invalidation.
 	scalingFrom *scalingList
 	saoType     [3]int
 	eoClass     [2]int
@@ -120,8 +115,6 @@ type ctuDecoder struct {
 	coef    [32 * 32]int32
 	scratch transformScratch
 
-	// Scratch for one prediction unit, the largest being 64x64 luma. Motion
-	// compensation runs for every unit, so none of this may be allocated.
 	saoSrc8  []uint8
 	saoSrc16 []uint16
 
@@ -135,9 +128,6 @@ type ctuDecoder struct {
 	avail   [4*32 + 1]bool
 }
 
-// scanGeometry is everything the tile scan and the z-scan address table are
-// built from. Every picture of a sequence shares it, and the tables cost more
-// than the rest of the per-picture setup put together.
 type scanGeometry struct {
 	widthInCtbs  uint32
 	heightInCtbs uint32
@@ -164,8 +154,6 @@ func (g scanGeometry) same(o scanGeometry) bool {
 		slices.Equal(g.cols, o.cols) && slices.Equal(g.rows, o.rows)
 }
 
-// newCTUDecoder prepares the per-picture state, reusing prev's buffers. They
-// are sized from the sequence and grow when a larger one arrives.
 func newCTUDecoder(prev *ctuDecoder, s *sps, p *pps, sh *sliceHeader, pic *Picture) *ctuDecoder {
 	d := prev
 	if d == nil {
@@ -198,8 +186,6 @@ func newCTUDecoder(prev *ctuDecoder, s *sps, p *pps, sh *sliceHeader, pic *Pictu
 		skipped:    reuse(d.skipped, tbW*tbH),
 		noFilter:   reuse(d.noFilter, tbW*tbH),
 
-		// Only mvValid says whether the three beside it mean anything, and
-		// every read of them is behind it, so they carry over unzeroed.
 		mvField: keep(d.mvField, mvW*mvH),
 		mvPoc:   keep(d.mvPoc, mvW*mvH),
 		mvLong:  keep(d.mvLong, mvW*mvH),
@@ -262,8 +248,6 @@ func newCTUDecoder(prev *ctuDecoder, s *sps, p *pps, sh *sliceHeader, pic *Pictu
 	return d
 }
 
-// keep returns a buffer of n elements without clearing it, for a table that is
-// either rewritten in full or carried over.
 func keep[T any](b []T, n int) []T {
 	if cap(b) < n {
 		return make([]T, n)
@@ -272,7 +256,6 @@ func keep[T any](b []T, n int) []T {
 	return b[:n]
 }
 
-// reuse returns a zeroed buffer of n elements, keeping b's memory when it fits.
 func reuse[T any](b []T, n int) []T {
 	if cap(b) < n {
 		return make([]T, n)
@@ -284,8 +267,6 @@ func reuse[T any](b []T, n int) []T {
 	return b
 }
 
-// buildMinTbAddr is the MinTbAddrZs derivation of 6.5.2, which the
-// availability process in 6.4.1 compares against.
 func (d *ctuDecoder) buildMinTbAddr(h int) {
 	shift := int(d.s.ctbLog2SizeY) - d.minTbLog2
 
@@ -319,7 +300,6 @@ func (d *ctuDecoder) tbIndex(x, y int) int {
 	return (y>>d.minTbLog2)*d.minTbWidth + x>>d.minTbLog2
 }
 
-// available is the z-scan availability of 6.4.1.
 func (d *ctuDecoder) available(xCurr, yCurr, xN, yN int) bool {
 	if xN < 0 || yN < 0 ||
 		xN >= int(d.s.picWidthInLumaSamples) || yN >= int(d.s.picHeightInLumaSamples) {
@@ -330,8 +310,6 @@ func (d *ctuDecoder) available(xCurr, yCurr, xN, yN int) bool {
 		return false
 	}
 
-	// With one tile and a slice starting at the first block, everything
-	// earlier in z-scan order is in the same slice and the same tile.
 	if d.simpleAvail {
 		return true
 	}
@@ -344,12 +322,9 @@ func (d *ctuDecoder) available(xCurr, yCurr, xN, yN int) bool {
 		return false
 	}
 
-	// 6.4.1 wants the neighbour in the same slice. Slices follow the tile scan,
-	// so a raster comparison would admit one from a slice already finished.
 	return d.ctbSliceAddr[nbRs] == int32(d.sliceAddrRs)
 }
 
-// intraChromaMode is Table 8-2 and, for 4:2:2, Table 8-3.
 func (d *ctuDecoder) intraChromaMode(luma int) int {
 	mode := luma
 
@@ -369,7 +344,6 @@ func (d *ctuDecoder) intraChromaMode(luma int) int {
 	return mode
 }
 
-// Table 8-3.
 var chroma422Map = [35]uint8{
 	0, 1, 2, 2, 2, 2, 3, 5, 7, 8, 10, 12, 13, 15, 17, 18, 19, 20,
 	21, 22, 23, 23, 24, 24, 25, 25, 26, 27, 27, 28, 28, 29, 29, 30, 31,
@@ -403,8 +377,6 @@ func (d *ctuDecoder) codingQuadtree(x, y, log2Size, depth int) error {
 		d.qpYCur = d.qpYPred
 	}
 
-	// 7.3.8.4 restarts the chroma offset at its own depth, which need not be
-	// the one the luma delta uses.
 	if d.sh.cuChromaQPOffset &&
 		log2Size >= int(d.s.ctbLog2SizeY)-int(d.p.diffCuChromaQPOffsetDep) {
 		d.cuOffCoded = false
@@ -432,24 +404,22 @@ func (d *ctuDecoder) codingQuadtree(x, y, log2Size, depth int) error {
 	return nil
 }
 
-// predictQP is qPY_PRED of 8.6.1.
 func (d *ctuDecoder) predictQP(x, y int) int32 {
 	ctbMask := ^(1<<d.s.ctbLog2SizeY - 1)
 
 	qpA, qpB := d.qpYPrev, d.qpYPrev
 
-	if d.available(x, y, x-1, y) && (x-1)&ctbMask == x&ctbMask && y&ctbMask == y&ctbMask {
+	if d.available(x, y, x-1, y) && (x-1)&ctbMask == x&ctbMask {
 		qpA = int32(d.qpY[d.tbIndex(x-1, y)])
 	}
 
-	if d.available(x, y, x, y-1) && x&ctbMask == x&ctbMask && (y-1)&ctbMask == y&ctbMask {
+	if d.available(x, y, x, y-1) && (y-1)&ctbMask == y&ctbMask {
 		qpB = int32(d.qpY[d.tbIndex(x, y-1)])
 	}
 
 	return (qpA + qpB + 1) >> 1
 }
 
-// parseCuQPDelta reads cu_qp_delta_abs and its sign, 9.3.3.10.
 func (d *ctuDecoder) parseCuQPDelta() {
 	prefix := 0
 	for prefix < 5 {
@@ -468,7 +438,6 @@ func (d *ctuDecoder) parseCuQPDelta() {
 	v := int32(prefix)
 
 	if prefix > 4 {
-		// 7.4.9.14 caps cu_qp_delta_abs at 26 + QpBdOffsetY/2, well inside this.
 		k := 0
 		for k < 6 && d.c.decodeBypass() != 0 {
 			k++
@@ -486,15 +455,10 @@ func (d *ctuDecoder) parseCuQPDelta() {
 
 	off := 6 * (int32(d.s.bitDepthLuma) - 8)
 
-	// 8.6.1 wraps into [-QpBdOffsetY, 51]. Go's remainder keeps the sign of
-	// the dividend, so a delta outside its legal range would land outside that
-	// and index the scaling tables from below.
 	m := 52 + off
 	d.qpYCur = ((d.qpYPred+d.qpDelta+52+2*off)%m+m)%m - off
 }
 
-// parseCuChromaQPOffset is 7.3.8.10's cu_chroma_qp_offset_flag and the index
-// beside it, which pick an entry out of the lists 7.4.3.3.3 carries.
 func (d *ctuDecoder) parseCuChromaQPOffset() {
 	d.cuOffCoded = true
 	d.cuOffCb, d.cuOffCr = 0, 0
@@ -505,8 +469,6 @@ func (d *ctuDecoder) parseCuChromaQPOffset() {
 
 	idx := 0
 
-	// Truncated rice, so the prefix stops at the first zero or at the end of
-	// the list.
 	for cMax := int(d.p.chromaQPOffsetListLen) - 1; idx < cMax; idx++ {
 		if d.c.decodeBin(ctxCUChromaQPOffsetIDX) == 0 {
 			break
@@ -517,8 +479,6 @@ func (d *ctuDecoder) parseCuChromaQPOffset() {
 	d.cuOffCr = d.p.crQPOffsetList[idx]
 }
 
-// fill writes one value across every minimum transform block a coding block
-// covers, which is the granularity every per-block array uses.
 func fill[T any](d *ctuDecoder, dst []T, x, y, size int, v T) {
 	nw, nh := d.blocksIn(x, y, size, size, d.minTbLog2)
 
@@ -531,14 +491,11 @@ func fill[T any](d *ctuDecoder, dst []T, x, y, size int, v T) {
 	}
 }
 
-// codingUnit is 7.3.8.5. QpY of 8.6.1 covers the whole coding unit, including
-// one that carries no residual at all, since deblocking reads it back.
 func (d *ctuDecoder) codingUnit(x, y, log2Size, depth int) error {
 	if err := d.codingUnitData(x, y, log2Size, depth); err != nil {
 		return err
 	}
 
-	// 8.7.2.2 marks the coding block boundary even with no transform tree.
 	d.markTU(x, y, 1<<log2Size, 1<<log2Size, false)
 
 	d.setQP(x, y, 1<<log2Size)
@@ -635,8 +592,6 @@ func (d *ctuDecoder) codingUnitData(x, y, log2Size, depth int) error {
 		fill(d, d.intraMode, px, py, pbSize, uint8(lumaModes[i]))
 	}
 
-	// 7.3.8.5 codes intra_chroma_pred_mode once per prediction block when
-	// ChromaArrayType is 3, and once per coding unit otherwise.
 	switch {
 	case d.s.chromaArrayType() == 3:
 		for i := range parts {
@@ -652,13 +607,9 @@ func (d *ctuDecoder) codingUnitData(x, y, log2Size, depth int) error {
 	return d.transformTree(x, y, x, y, log2Size, 0, 0, lumaModes, partMode, [2]bool{}, [2]bool{})
 }
 
-// intraLumaModeWithFlag completes 8.4.2 once prev_intra_luma_pred_flag has been
-// read; the flags for all partitions precede the indices in the syntax.
 func (d *ctuDecoder) intraLumaModeWithFlag(x, y int, prev bool) int {
 	candA, candB := intraDC, intraDC
 
-	// 8.4.2: a neighbour that is not intra coded contributes INTRA_DC, as does
-	// one above the current coding tree block row.
 	if d.available(x, y, x-1, y) && d.blk[d.blkIndex(x-1, y)].intra {
 		candA = int(d.intraMode[d.tbIndex(x-1, y)])
 	}
@@ -737,8 +688,6 @@ func (d *ctuDecoder) transformTree(x, y, xBase, yBase, log2Size, depth, blkIdx i
 		maxDepth++
 	}
 
-	// 7.3.8.8: with no inter hierarchy an inter unit that is not 2Nx2N still
-	// splits once.
 	interSplit := !d.curIntra && d.s.maxTrHierInter == 0 &&
 		partMode != partMode2Nx2N && depth == 0
 
@@ -752,8 +701,6 @@ func (d *ctuDecoder) transformTree(x, y, xBase, yBase, log2Size, depth, blkIdx i
 	cbfCb, cbfCr := cbfCbUp, cbfCrUp
 
 	if d.s.chromaArrayType() != 0 && (log2Size > 2 || d.s.chromaArrayType() == 3) {
-		// 7.3.8.8: 4:2:2 stacks two chroma transform blocks per luma block, each
-		// with its own cbf, once the tree stops splitting them apart.
 		second := d.s.chromaArrayType() == 2 && (!split || log2Size == 3)
 
 		cbfCb = [2]bool{}
@@ -786,9 +733,6 @@ func (d *ctuDecoder) transformTree(x, y, xBase, yBase, log2Size, depth, blkIdx i
 		return nil
 	}
 
-	// 7.3.8.8 only codes cbf_luma when the block is intra, nested, or has
-	// chroma coefficients; otherwise an inter root block is inferred to have
-	// luma residual.
 	cbfLuma := true
 	if depth != 0 || cbfCb[0] || cbfCb[1] || cbfCr[0] || cbfCr[1] || d.curIntra {
 		cbfLuma = d.c.decodeBin(ctxCBFLuma+boolToInt(depth == 0)) != 0
@@ -807,8 +751,6 @@ func (d *ctuDecoder) setQP(x, y, size int) {
 func (d *ctuDecoder) transformUnit(x, y, xBase, yBase, log2Size, depth, blkIdx int,
 	lumaModes [4]int, partMode int, cbfLuma bool, cbfCb, cbfCr [2]bool,
 ) error {
-	// 8.4.4.2 takes the mode from IntraPredModeY at the block's own position,
-	// which is not blkIdx once the transform tree splits below the partition.
 	mode := lumaModes[0]
 	if d.curIntra {
 		mode = int(d.intraMode[d.tbIndex(x, y)])
@@ -857,9 +799,6 @@ func (d *ctuDecoder) transformUnit(x, y, xBase, yBase, log2Size, depth, blkIdx i
 	return d.chromaTBs(cx, cy, 2, d.chromaMode(xBase, yBase), cbfCb, cbfCr)
 }
 
-// chromaTBs reconstructs the chroma transform blocks of one transform unit.
-// 4:2:2 stacks two of them per component, and 7.3.8.10 codes both Cb blocks
-// before either Cr block.
 func (d *ctuDecoder) chromaTBs(cx, cy, c, mode int, cbfCb, cbfCr [2]bool) error {
 	n := 1
 	if d.s.chromaArrayType() == 2 {
@@ -929,7 +868,6 @@ func reconstructPlane[P pixel](d *ctuDecoder, plane []P, stride, x, y, log2Size,
 		return err
 	}
 
-	// 8.6.3 scales by Qp'Y, which carries the bit depth offset QpY does not.
 	offY := 6 * (int32(d.s.bitDepthLuma) - 8)
 	offC := 6 * (int32(d.s.bitDepthChroma) - 8)
 
@@ -944,12 +882,8 @@ func reconstructPlane[P pixel](d *ctuDecoder, plane []P, stride, x, y, log2Size,
 		qp = chromaQP(clip3(d.qpYCur+off, -offC, 57), d.s.chromaArrayType()) + offC
 	}
 
-	// 8.6.2 turns a four by four intra block end for end, whether it reaches
-	// the residual by skipping the transform or by bypassing it.
 	rotate := d.s.transformSkipRotation && n == 4 && d.curIntra
 
-	// 8.6.2: a bypassed unit takes the coefficients as the residual, with no
-	// scaling and no transform.
 	shift := 0
 
 	if d.bypass && rotate {
@@ -988,7 +922,6 @@ func reconstructPlane[P pixel](d *ctuDecoder, plane []P, stride, x, y, log2Size,
 	return nil
 }
 
-// addResidual is bdShift of 8.6.2 and the sum of 8.6.6, in one pass.
 func addResidual[P pixel](plane []P, stride, x, y, n, shift int, coef []int32, bitDepth int) {
 	if n >= 8 {
 		if p, ok := any(plane).([]uint8); ok && bitDepth == 8 {
@@ -1045,8 +978,6 @@ func gatherRef[P pixel](d *ctuDecoder, plane []P, stride, x, y, n, cIdx int) {
 
 	d.ref.n = n
 
-	// Availability is uniform across a minimum transform block, so it is
-	// derived once per block rather than once per reference sample.
 	lastTb, lastOK := -1, false
 
 	for i := range 4*n + 1 {
@@ -1070,8 +1001,6 @@ func gatherRef[P pixel](d *ctuDecoder, plane []P, stride, x, y, n, cIdx int) {
 				lastTb = tb
 				lastOK = d.available(x*sw, y*sh, nx*sw, ny*sh)
 
-				// 8.4.4.2.2: with constrained intra prediction, samples from
-				// inter-coded neighbours count as unavailable.
 				if lastOK && d.p.constrainedIntraPred &&
 					!d.blk[d.blkIndex(nx*sw, ny*sh)].intra {
 					lastOK = false
@@ -1090,8 +1019,6 @@ func gatherRef[P pixel](d *ctuDecoder, plane []P, stride, x, y, n, cIdx int) {
 	d.ref.substitute(d.avail[:4*n+1], d.pic.depth(cIdx))
 }
 
-// buildTileScan is 6.5.1, the raster to tile scan conversion and the tile
-// each coding tree block belongs to.
 func (d *ctuDecoder) buildTileScan() {
 	w, h := int(d.s.picWidthInCtbs), int(d.s.picHeightInCtbs)
 
@@ -1144,8 +1071,6 @@ func (d *ctuDecoder) buildTileScan() {
 	}
 }
 
-// partMode is 7.3.8.5's part_mode, whose binarization depends on the
-// prediction mode, the coding block size and whether asymmetric splits are on.
 func (d *ctuDecoder) partMode(intra bool, log2Size int) int {
 	if intra {
 		if d.c.decodeBin(ctxPartMode) != 0 {
@@ -1161,8 +1086,6 @@ func (d *ctuDecoder) partMode(intra bool, log2Size int) int {
 
 	minCb := log2Size == int(d.s.minCbLog2SizeY)
 
-	// Table 9-34. At the smallest coding block size the third bin separates
-	// Nx2N from NxN, and the asymmetric modes are not available at all.
 	if d.c.decodeBin(ctxPartMode+1) != 0 {
 		if minCb || !d.s.ampEnabled {
 			return partMode2NxN
@@ -1232,8 +1155,6 @@ func (d *ctuDecoder) interCU(x, y, log2Size, depth, partMode int) error {
 		}
 	}
 
-	// The bin is rqt_root_cbf: one means residual data follows. It is
-	// inferred to one for a merged 2Nx2N unit.
 	if !(partMode == partMode2Nx2N && d.lastMerge) {
 		if d.c.decodeBin(ctxNoResidualDataFlag) == 0 {
 			return nil
@@ -1245,8 +1166,6 @@ func (d *ctuDecoder) interCU(x, y, log2Size, depth, partMode int) error {
 	return d.transformTree(x, y, x, y, log2Size, 0, 0, modes, partMode, [2]bool{}, [2]bool{})
 }
 
-// scalingFactor picks the matrix of 8.6.3, which is flat when scaling lists
-// are off and when a large block skips the transform.
 func (d *ctuDecoder) scalingFactor(log2Size, cIdx int, skip bool) []uint8 {
 	if !d.s.scalingListEnabled || (skip && log2Size > 2) {
 		return nil
@@ -1280,8 +1199,6 @@ func readPCM[P pixel](g *getBits, plane []P, stride, x, y, w, h, depth, bitDepth
 	}
 }
 
-// pcmSample is 7.3.8.7 and 8.4.4.1: the samples are read from the bitstream at
-// the byte boundary the arithmetic decoder left off, which then restarts.
 func (d *ctuDecoder) pcmSample(x, y, log2Size int) error {
 	off := d.c.pcmOffset()
 	if off < 0 || off >= len(d.c.data) {

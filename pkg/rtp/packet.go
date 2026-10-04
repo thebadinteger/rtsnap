@@ -5,7 +5,6 @@ import (
 	"fmt"
 )
 
-// packet represents an rtp packet (rfc 3550)
 type Packet struct {
 	Version        uint8
 	Padding        bool
@@ -18,7 +17,6 @@ type Packet struct {
 	Payload        []byte
 }
 
-// unmarshal decodes an rtp packet from raw bytes
 func (p *Packet) Unmarshal(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("rtp packet too short: %d bytes", len(data))

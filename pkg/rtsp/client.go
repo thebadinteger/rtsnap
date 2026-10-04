@@ -27,7 +27,6 @@ type Client struct {
 	rtpChannel int
 }
 
-// dial connects to the rtsp server
 func Dial(ctx context.Context, rtspURL string, user, pass string) (*Client, error) {
 	u, err := url.Parse(rtspURL)
 	if err != nil {
@@ -128,7 +127,6 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 	return res, err
 }
 
-// describe fetches the stream sdp
 func (c *Client) Describe(ctx context.Context) error {
 	req := &Request{
 		Method: "DESCRIBE",
@@ -174,7 +172,6 @@ func (c *Client) Describe(ctx context.Context) error {
 	return nil
 }
 
-// setup negotiates tcp interleaved transport
 func (c *Client) Setup(ctx context.Context) error {
 	if c.Track == nil {
 		return fmt.Errorf("no track available for setup")
@@ -222,7 +219,6 @@ func (c *Client) Setup(ctx context.Context) error {
 	return nil
 }
 
-// play starts playback
 func (c *Client) Play(ctx context.Context) error {
 	req := &Request{
 		Method: "PLAY",
@@ -242,7 +238,6 @@ func (c *Client) Play(ctx context.Context) error {
 	return nil
 }
 
-// readframe reads the next interleaved rtp frame
 func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 	if d, ok := ctx.Deadline(); ok {
 		_ = c.conn.SetReadDeadline(d)
@@ -284,7 +279,6 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 			return frame, nil
 		}
 
-		// skip any unexpected rtsp text messages
 		_, err = c.reader.ReadString('\n')
 		if err != nil {
 			if ctx.Err() != nil {
@@ -295,7 +289,6 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 	}
 }
 
-// teardown cleanly closes the rtsp session
 func (c *Client) Teardown(ctx context.Context) error {
 	if c.session == "" {
 		return nil
@@ -308,12 +301,10 @@ func (c *Client) Teardown(ctx context.Context) error {
 	return nil
 }
 
-// rtpchannel returns the negotiated rtp interleaved channel
 func (c *Client) RTPChannel() int {
 	return c.rtpChannel
 }
 
-// close closes the network connection
 func (c *Client) Close() error {
 	if c.conn != nil {
 		return c.conn.Close()
@@ -321,7 +312,6 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// selecttrack chooses active track matching codec or default priority
 func (c *Client) SelectTrack(codec string) (*MediaTrack, error) {
 	t, err := SelectTrack(c.Tracks, codec)
 	if err != nil {
@@ -331,7 +321,6 @@ func (c *Client) SelectTrack(codec string) (*MediaTrack, error) {
 	return t, nil
 }
 
-// availablecodecs returns list of unique codecs in stream
 func (c *Client) AvailableCodecs() []string {
 	var res []string
 	seen := make(map[string]bool)

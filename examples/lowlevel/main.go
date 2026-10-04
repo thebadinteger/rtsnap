@@ -20,13 +20,11 @@ func main() {
 	}
 	defer client.Close()
 
-	// describe stream and inspect track info
 	if err := client.Describe(ctx); err != nil {
 		panic(err)
 	}
 	fmt.Printf("stream codec: %s, control: %s\n", client.Track.Codec, client.Track.Control)
 
-	// setup tcp interleaved transport
 	if err := client.Setup(ctx); err != nil {
 		panic(err)
 	}

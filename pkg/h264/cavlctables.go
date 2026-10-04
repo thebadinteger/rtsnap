@@ -1,11 +1,5 @@
 package h264
 
-// VLC tables from H.264 spec for CAVLC decoding.
-// Tables match FFmpeg's h264_cavlc.c for correctness verification.
-
-// coeff_token VLC tables (Table 9-5).
-// Index: [table][4*totalCoeff + trailingOnes]
-// Tables: 0=nC[0,1], 1=nC[2,3], 2=nC[4,7], 3=nC>=8
 var coeffTokenLen = [4][4 * 17]uint8{
 	{
 		1, 0, 0, 0,
@@ -68,8 +62,6 @@ var coeffTokenBits = [4][4 * 17]uint8{
 	},
 }
 
-// Chroma DC coeff_token VLC (Table 9-5, 4:2:0, nC = -1).
-// Index: [4*totalCoeff + trailingOnes]
 var chromaDCCoeffTokenLen = [4 * 5]uint8{
 	2, 0, 0, 0,
 	6, 1, 0, 0,
@@ -86,8 +78,6 @@ var chromaDCCoeffTokenBits = [4 * 5]uint8{
 	2, 3, 2, 0,
 }
 
-// total_zeros VLC tables (Table 9-7).
-// Index: [totalCoeff-1][totalZeros]
 var totalZerosLen = [16][16]uint8{
 	{1, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 9},
 	{3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 6, 6},
@@ -124,8 +114,6 @@ var totalZerosBits = [16][16]uint8{
 	{0, 1},
 }
 
-// Chroma DC total_zeros VLC (Table 9-9, 4:2:0, maxNumCoeff=4).
-// Index: [totalCoeff-1][totalZeros]
 var chromaDCTotalZerosLen = [3][4]uint8{
 	{1, 2, 3, 3},
 	{1, 2, 2, 0},
@@ -138,8 +126,6 @@ var chromaDCTotalZerosBits = [3][4]uint8{
 	{1, 0, 0, 0},
 }
 
-// run_before VLC tables (Table 9-10).
-// Index: [zerosLeft-1][runBefore]
 var runBeforeLen = [7][16]uint8{
 	{1, 1},
 	{1, 2, 2},
@@ -160,17 +146,12 @@ var runBeforeBits = [7][16]uint8{
 	{7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 }
 
-// CBP mapping tables for I-slices (Table 9-4).
-// Maps ue(v) coded CBP index to actual CBP value for Intra 4x4/8x8 macroblocks.
-// CBP = cbpLuma | (cbpChroma << 4)
-// golombToIntra4x4CBP maps me(v) code number to CBP for Intra 4x4.
 var golombToIntra4x4CBP = [48]uint8{
 	47, 31, 15, 0, 23, 27, 29, 30, 7, 11, 13, 14, 39, 43, 45, 46,
 	16, 3, 5, 10, 12, 19, 21, 26, 28, 35, 37, 42, 44, 1, 2, 4,
 	8, 17, 18, 20, 24, 6, 9, 22, 25, 32, 33, 34, 36, 40, 38, 41,
 }
 
-// GolombToIntra4x4CBP maps a ue(v) code number to the CBP value for Intra 4x4.
 func GolombToIntra4x4CBP(idx int) uint8 {
 	if idx < 0 || idx >= len(golombToIntra4x4CBP) {
 		return 0
@@ -178,7 +159,6 @@ func GolombToIntra4x4CBP(idx int) uint8 {
 	return golombToIntra4x4CBP[idx]
 }
 
-// nC selection table: maps nC value to coeff_token table index.
 func coeffTokenTableIdx(nC int) int {
 	switch {
 	case nC <= 1:
@@ -192,5 +172,4 @@ func coeffTokenTableIdx(nC int) int {
 	}
 }
 
-// Maximum code lengths per coeff_token table.
 var coeffTokenMaxLen = [4]int{16, 14, 10, 6}

@@ -4,7 +4,6 @@ type mv struct {
 	x, y int16
 }
 
-// predFlag records which lists a prediction unit uses.
 type mvInfo struct {
 	mv     [2]mv
 	refIdx [2]int8
@@ -15,14 +14,8 @@ func (m *mvInfo) sameMotion(o *mvInfo) bool {
 	return m.pred == o.pred && m.mv == o.mv && m.refIdx == o.refIdx
 }
 
-// neighbour supplies the motion of an already-decoded block, or reports it
-// unavailable. It stands in for the picture-wide motion field.
 type neighbour func(x, y int) (*mvInfo, bool)
 
-// mergeCandidates is the spatial part of 8.5.3.2.2 and 8.5.3.2.3: A1, B1, B0,
-// A0 and B2 in that order, with the pruning comparisons the clause specifies
-// and the partition rules that stop a 2NxN or Nx2N unit from collapsing onto
-// its sibling.
 func mergeCandidates(dst []mvInfo, nb neighbour, xPb, yPb, nPbW, nPbH, partIdx, partMode,
 	maxCand int, parMrgLevel int,
 ) []mvInfo {
@@ -40,8 +33,6 @@ func mergeCandidates(dst []mvInfo, nb neighbour, xPb, yPb, nPbW, nPbH, partIdx, 
 
 	cand := dst[:0]
 
-	// A partition rule that excludes A1 or B1 also removes it from the pruning
-	// comparisons; being pruned as a duplicate does not.
 	a1, availA1 := get(xPb-1, yPb+nPbH-1)
 	if partIdx == 1 && (partMode == partModeNx2N || partMode == partModenLx2N ||
 		partMode == partModenRx2N) {
@@ -84,10 +75,7 @@ func mergeCandidates(dst []mvInfo, nb neighbour, xPb, yPb, nPbW, nPbH, partIdx, 
 	return cand
 }
 
-// combineBiCandidates is 8.5.3.2.4, which pairs the L0 of one candidate with
-// the L1 of another until the list is full. It applies to B slices only.
 func combineBiCandidates(cand []mvInfo, maxCand int, lists [2][]int32) []mvInfo {
-	// Table 8-6, the order the pairs are tried in.
 	l0Idx := [12]int{0, 1, 0, 2, 1, 2, 0, 3, 1, 3, 2, 3}
 	l1Idx := [12]int{1, 0, 2, 0, 2, 1, 3, 0, 3, 1, 3, 2}
 
@@ -125,8 +113,6 @@ func combineBiCandidates(cand []mvInfo, maxCand int, lists [2][]int32) []mvInfo 
 	return cand
 }
 
-// zeroCandidates is 8.5.3.2.5, the zero-motion fill that guarantees the list
-// reaches its full length.
 func zeroCandidates(cand []mvInfo, maxCand, numRefIdx int, biPred bool) []mvInfo {
 	for i := 0; len(cand) < maxCand; i++ {
 		r := int8(0)
@@ -145,8 +131,6 @@ func zeroCandidates(cand []mvInfo, maxCand, numRefIdx int, biPred bool) []mvInfo
 	return cand
 }
 
-// scaleMV is the temporal distance scaling of 8.5.3.2.8, shared by the
-// temporal merge candidate and the spatial predictors that cross references.
 func scaleMV(v mv, currPoc, refPoc, colPoc, colRefPoc int32) mv {
 	td := clip3(colPoc-colRefPoc, -128, 127)
 	tb := clip3(currPoc-refPoc, -128, 127)
@@ -184,14 +168,6 @@ const (
 	predBI
 )
 
-// refPic pairs a reference picture with the POC the lists resolved it to.
-type refPic struct {
-	poc int32
-	pic *Picture
-}
-
-// amvpCandidates is 8.5.3.2.7. It reports the left and above predictors and
-// whether each was found, leaving 8.5.3.2.6 to assemble the list.
 func amvpCandidates(nb neighbour, xPb, yPb, nPbW, nPbH int, list int, refPoc int32,
 	currPoc int32, lists [2][]int32, long [2][]bool, refLong bool,
 ) (out [2]mv, avail [2]bool) {
@@ -208,8 +184,6 @@ func amvpCandidates(nb neighbour, xPb, yPb, nPbW, nPbH int, list int, refPoc int
 		return mv{}, false
 	}
 
-	// 8.5.3.2.7 takes a neighbour only when its reference matches the target in
-	// long term status, and never scales a long term vector.
 	scaled := func(m *mvInfo) (mv, bool) {
 		for k := range 2 {
 			l := list ^ k
@@ -265,8 +239,6 @@ func amvpCandidates(nb neighbour, xPb, yPb, nPbW, nPbH int, list int, refPoc int
 
 	out[1], avail[1] = sweep(above, direct)
 
-	// With no left neighbour at all the above predictor becomes the first
-	// candidate and the second is derived again, this time with scaling.
 	if !isScaled {
 		out[0], avail[0] = out[1], avail[1]
 		out[1], avail[1] = sweep(above, scaled)

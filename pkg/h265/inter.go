@@ -4,9 +4,6 @@ func (d *ctuDecoder) mvIndex(x, y int) int {
 	return (y>>2)*d.mvWidth + x>>2
 }
 
-// availablePB is 6.4.2. A neighbour inside the current coding block is
-// available without consulting the z-scan order of 6.4.1, apart from the one
-// partition the clause excludes.
 func (d *ctuDecoder) availablePB(xN, yN int) bool {
 	if xN < 0 || yN < 0 ||
 		xN >= int(d.s.picWidthInLumaSamples) || yN >= int(d.s.picHeightInLumaSamples) {
@@ -38,8 +35,6 @@ func (d *ctuDecoder) neighbourMV() neighbour {
 	}
 }
 
-// setMV records the motion of a prediction unit and the pictures its reference
-// indices name, which 8.5.3.2.8 reads back from a later picture.
 func (d *ctuDecoder) setMV(x, y, w, h int, m mvInfo) {
 	var poc [2]int32
 
@@ -71,7 +66,6 @@ func (d *ctuDecoder) setMV(x, y, w, h int, m mvInfo) {
 	}
 }
 
-// mvdCoding is 7.3.8.9.
 func (d *ctuDecoder) mvdCoding() mv {
 	g0x := d.c.decodeBin(ctxAbsMVDGreater0Flag) != 0
 	g0y := d.c.decodeBin(ctxAbsMVDGreater0Flag) != 0
@@ -106,7 +100,6 @@ func (d *ctuDecoder) mvdCoding() mv {
 	return mv{comp(g0x, g1x), comp(g0y, g1y)}
 }
 
-// expGolombBypass reads a bypass-coded order-k exponential Golomb value.
 func (d *ctuDecoder) expGolombBypass(k int) int32 {
 	n := 0
 	for d.c.decodeBypass() != 0 {
@@ -155,7 +148,6 @@ func (d *ctuDecoder) refIdx(numActive int) int8 {
 	return int8(v)
 }
 
-// interPredIdc is the binarization of 9.3.3.9.
 func (d *ctuDecoder) interPredIdc(nPbW, nPbH, depth int) int {
 	if nPbW+nPbH != 12 {
 		if d.c.decodeBin(ctxInterPredIDC+depth) != 0 {
@@ -166,7 +158,6 @@ func (d *ctuDecoder) interPredIdc(nPbW, nPbH, depth int) int {
 	return int(d.c.decodeBin(ctxInterPredIDC + 4))
 }
 
-// predictionUnit is 7.3.8.6 followed by the motion compensation of 8.5.3.
 func (d *ctuDecoder) predictionUnit(x, y, w, h, partIdx, partMode, depth, nCbS, xCb, yCb int,
 	skip bool,
 ) error {
@@ -174,9 +165,6 @@ func (d *ctuDecoder) predictionUnit(x, y, w, h, partIdx, partMode, depth, nCbS, 
 	d.cuX, d.cuY, d.cuSize = xCb, yCb, nCbS
 	d.puW, d.puH, d.partIdx = w, h, partIdx
 
-	// 8.5.3.2.2: inside a parallel merge region a small coding block derives
-	// its candidates, its neighbour availability and its temporal candidate as
-	// if the whole block were one unit.
 	mx, my, mw, mh, mIdx := x, y, w, h, partIdx
 	if int(d.p.log2ParallelMergeLevel) > 2 && nCbS == 8 {
 		mx, my, mw, mh, mIdx = xCb, yCb, nCbS, nCbS, 0
@@ -251,8 +239,6 @@ func (d *ctuDecoder) predictionUnit(x, y, w, h, partIdx, partMode, depth, nCbS, 
 
 		m = cand[idx]
 
-		// 8.5.3.2.1: the smallest prediction units may not be bi-predicted, so
-		// a merge candidate that is drops to list zero.
 		if w+h == 12 && m.pred[0] && m.pred[1] {
 			m.pred[1] = false
 			m.mv[1] = mv{}
@@ -441,8 +427,6 @@ func (d *ctuDecoder) combine(x, y, w, h, cIdx int, buf [2][]int16, m *mvInfo) er
 	return combineInto(d, plane, y*stride+x, stride, w, h, cIdx, bd, buf, m)
 }
 
-// combineInto applies 8.5.3.3.4, choosing the default or the explicitly
-// weighted process as the picture parameter set requires.
 func combineInto[P pixel](d *ctuDecoder, dst []P, off, stride, w, h, cIdx, bd int,
 	buf [2][]int16, m *mvInfo,
 ) error {
@@ -503,8 +487,6 @@ func combinePred[P pixel](dst []P, off, stride, w, h, bd int, buf [2][]int16, m 
 	return nil
 }
 
-// storeColMotion subsamples the picture's motion field to the 16x16 grid the
-// temporal predictor reads, recording reference pictures by POC.
 func (d *ctuDecoder) storeColMotion() {
 	for y := 0; y < int(d.s.picHeightInLumaSamples); y += 16 {
 		for x := 0; x < int(d.s.picWidthInLumaSamples); x += 16 {
@@ -526,8 +508,6 @@ func (d *ctuDecoder) storeColMotion() {
 	}
 }
 
-// temporalMV is 8.5.3.2.8 and 8.5.3.2.9: the collocated block at the
-// bottom-right of the prediction unit, falling back to its centre.
 func (d *ctuDecoder) temporalMV(xPb, yPb, nPbW, nPbH, list int, refPoc int32, refLong bool) (mv, bool) {
 	if !d.sh.temporalMvp || d.colPic == nil {
 		return mv{}, false
@@ -548,7 +528,6 @@ func (d *ctuDecoder) temporalMV(xPb, yPb, nPbW, nPbH, list int, refPoc int32, re
 		return c, true
 	}
 
-	// 8.5.3.2.9, which the caller falls back from when it yields nothing.
 	derive := func(c *colMotion) (mv, bool) {
 		l := 0
 
@@ -569,8 +548,6 @@ func (d *ctuDecoder) temporalMV(xPb, yPb, nPbW, nPbH, list int, refPoc int32, re
 			return mv{}, false
 		}
 
-		// The collocated reference must match the target in long term status,
-		// and a long term one is never scaled.
 		if c.refLong[l] != refLong {
 			return mv{}, false
 		}
@@ -586,8 +563,6 @@ func (d *ctuDecoder) temporalMV(xPb, yPb, nPbW, nPbH, list int, refPoc int32, re
 		return scaleMV(c.info.mv[l], d.poc, refPoc, int32(col.POC), c.refPoc[l]), true
 	}
 
-	// The bottom-right candidate is unavailable outside the picture or past the
-	// coding tree row, and the centre takes over whenever it yields nothing.
 	if c, ok := try(xPb+nPbW, yPb+nPbH); ok &&
 		yPb>>d.s.ctbLog2SizeY == (yPb+nPbH)>>d.s.ctbLog2SizeY {
 		if v, ok := derive(c); ok {
@@ -603,8 +578,6 @@ func (d *ctuDecoder) temporalMV(xPb, yPb, nPbW, nPbH, list int, refPoc int32, re
 	return derive(c)
 }
 
-// temporalMerge builds the temporal merge candidate, which uses reference
-// index zero in each list the slice has.
 func (d *ctuDecoder) temporalMerge(x, y, w, h int) (mvInfo, bool) {
 	var m mvInfo
 

@@ -1,8 +1,5 @@
 package h264
 
-// cabacContextInitI contains the (m, n) initialization values for I-slices.
-// Transcribed from FFmpeg cabac_context_init_I (1024 entries).
-// Each entry is {m, n} where preCtxState = Clip3(1, 126, ((m * SliceQPY) >> 4) + n).
 var cabacContextInitI = [1024][2]int8{
 	{20, -15}, {2, 54}, {3, 74}, {20, -15},
 	{2, 54}, {3, 74}, {-28, 127}, {-23, 104},

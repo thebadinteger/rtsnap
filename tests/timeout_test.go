@@ -9,7 +9,6 @@ import (
 )
 
 func TestTimeoutDial(t *testing.T) {
-	// unreachable local port
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
@@ -29,7 +28,7 @@ func TestTimeoutDial(t *testing.T) {
 func TestTimeoutNoVideo(t *testing.T) {
 	server, err := newMockServer(&mockServer{
 		codec:   "h264",
-		noVideo: true, // does not send any RTP packets
+		noVideo: true,
 	})
 	if err != nil {
 		t.Fatalf("newMockServer: %v", err)
@@ -64,7 +63,6 @@ func TestContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// cancel immediately after 50ms
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		cancel()

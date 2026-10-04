@@ -7,14 +7,12 @@ import (
 	"math"
 )
 
-// Errors for parsing and handling AVC slices
 var (
 	ErrNoSliceHeader      = errors.New("no slice header")
 	ErrInvalidSliceType   = errors.New("invalid slice type")
 	ErrTooFewBytesToParse = errors.New("too few bytes to parse symbol")
 )
 
-// SliceType - AVC slice type
 type SliceType uint
 
 func (s SliceType) String() string {
@@ -34,7 +32,6 @@ func (s SliceType) String() string {
 	}
 }
 
-// AVC slice types
 const (
 	SLICE_P  = SliceType(0)
 	SLICE_B  = SliceType(1)
@@ -43,7 +40,6 @@ const (
 	SLICE_SI = SliceType(4)
 )
 
-// GetSliceTypeFromNALU - parse slice header to get slice type in interval 0 to 4
 func GetSliceTypeFromNALU(data []byte) (sliceType SliceType, err error) {
 
 	if len(data) <= 1 {
@@ -54,8 +50,6 @@ func GetSliceTypeFromNALU(data []byte) (sliceType SliceType, err error) {
 	naluType := GetNaluType(data[0])
 	switch naluType {
 	case 1, 2, 5, 19:
-		// slice_layer_without_partitioning_rbsp
-		// slice_data_partition_a_layer_rbsp
 
 	default:
 		err = ErrNoSliceHeader
@@ -63,7 +57,6 @@ func GetSliceTypeFromNALU(data []byte) (sliceType SliceType, err error) {
 	}
 	r := NewEBSPReader(bytes.NewReader((data[1:])))
 
-	// first_mb_in_slice
 	_ = r.ReadExpGolomb()
 	sliceType = SliceType(r.ReadExpGolomb())
 	if r.AccError() != nil {
@@ -75,7 +68,7 @@ func GetSliceTypeFromNALU(data []byte) (sliceType SliceType, err error) {
 	}
 
 	if sliceType >= 5 {
-		sliceType -= 5 // The same type is repeated twice to tell if all slices in picture are the same
+		sliceType -= 5
 	}
 	return
 }
@@ -123,7 +116,6 @@ type SliceHeader struct {
 	AdaptiveRefPicMarkingModeFlag bool
 }
 
-// ParseSliceHeader parses AVC slice header following the syntax in ISO/IEC 14496-10 section 7.3.3
 func ParseSliceHeader(nalu []byte, spsMap map[uint32]*SPS, ppsMap map[uint32]*PPS) (*SliceHeader, error) {
 	sh := SliceHeader{}
 	buf := bytes.NewBuffer(nalu)
@@ -132,8 +124,6 @@ func ParseSliceHeader(nalu []byte, spsMap map[uint32]*SPS, ppsMap map[uint32]*PP
 	naluType := GetNaluType(byte(nalHdr))
 	switch naluType {
 	case 1, 2, 5, 19:
-		// slice_layer_without_partitioning_rbsp
-		// slice_data_partition_a_layer_rbsp
 	default:
 		err := ErrNoSliceHeader
 		return nil, err
@@ -199,7 +189,6 @@ func ParseSliceHeader(nalu []byte, spsMap map[uint32]*SPS, ppsMap map[uint32]*PP
 		}
 	}
 
-	// ref_pic_list_modification (nal unit type != 20 or 21) Section G.3.3.3.1.1
 	if sliceType != SLICE_I && sliceType != SLICE_SI {
 		sh.RefPicListModificationL0Flag = r.ReadFlag()
 		if sh.RefPicListModificationL0Flag {
@@ -244,30 +233,26 @@ func ParseSliceHeader(nalu []byte, spsMap map[uint32]*SPS, ppsMap map[uint32]*PP
 			}
 		}
 	}
-	// end ref_pic_list_modification
 
 	if pps.WeightedPredFlag && (sliceType == SLICE_P || sliceType == SLICE_SP) ||
 		(pps.WeightedBipredIDC == 1 && sliceType == SLICE_B) {
-		// pred_weight_table, section 7.3.3.2
 		sh.LumaLog2WeightDenom = uint32(r.ReadExpGolomb())
-		if sps.ChromaArrayType() != 0 { // chroma_idc != 0 in Bento4
+		if sps.ChromaArrayType() != 0 {
 			sh.ChromaLog2WeightDenom = uint32(r.ReadExpGolomb())
 		}
 
 		for i := uint32(0); i <= sh.NumRefIdxL0ActiveMinus1; i++ {
 			lumaWeightL0Flag := r.ReadFlag()
 			if lumaWeightL0Flag {
-				// Just parse, don't store this
-				_ = r.ReadExpGolomb() // luma_weight_l0[i] = SignedGolomb()
-				_ = r.ReadExpGolomb() // luma_offset_l0[i] = SignedGolomb()
+				_ = r.ReadExpGolomb()
+				_ = r.ReadExpGolomb()
 			}
 			if sps.ChromaArrayType() != 0 {
 				chromaWeightL0Flag := r.ReadFlag()
 				if chromaWeightL0Flag {
 					for j := 0; j < 2; j++ {
-						// Just parse, don't store this
-						_ = r.ReadExpGolomb() // chroma_weight_l0[i][j] = SignedGolomb()
-						_ = r.ReadExpGolomb() // chroma_offset_l0[i][j] = SignedGolomb()
+						_ = r.ReadExpGolomb()
+						_ = r.ReadExpGolomb()
 					}
 				}
 			}
@@ -276,27 +261,23 @@ func ParseSliceHeader(nalu []byte, spsMap map[uint32]*SPS, ppsMap map[uint32]*PP
 			for i := uint32(0); i <= sh.NumRefIdxL1ActiveMinus1; i++ {
 				lumaWeightL1Flag := r.ReadFlag()
 				if lumaWeightL1Flag {
-					// Just parse, don't store this
-					_ = r.ReadExpGolomb() // luma_weight_l1[i] = SignedGolomb()
-					_ = r.ReadExpGolomb() // luma_offset_l1[i] = SignedGolomb()
+					_ = r.ReadExpGolomb()
+					_ = r.ReadExpGolomb()
 				}
 				if sps.ChromaArrayType() != 0 {
 					chromaWeightL1Flag := r.ReadFlag()
 					if chromaWeightL1Flag {
-						// Just parse, don't store this
 						for j := 0; j < 2; j++ {
-							_ = r.ReadSignedGolomb() // chroma_weight_l1[i][j] = SignedGolomb()
-							_ = r.ReadSignedGolomb() // chroma_offset_l1[i][j] = SignedGolomb()
+							_ = r.ReadSignedGolomb()
+							_ = r.ReadSignedGolomb()
 						}
 					}
 				}
 			}
 		}
-		// end pred_weight_table
 	}
 
 	if nalRefIDC != 0 {
-		// dec_ref_pic_marking
 		if naluType == NALU_IDR {
 			sh.NoOutputOfPriorPicsFlag = r.ReadFlag()
 			sh.LongTermReferenceFlag = r.ReadFlag()
@@ -326,7 +307,6 @@ func ParseSliceHeader(nalu []byte, spsMap map[uint32]*SPS, ppsMap map[uint32]*PP
 				}
 			}
 		}
-		// end dec_ref_pic_marking
 	}
 	if pps.EntropyCodingModeFlag && sliceType != SLICE_I && sliceType != SLICE_SI {
 		sh.CabacInitIDC = uint32(r.ReadExpGolomb())
@@ -354,7 +334,6 @@ func ParseSliceHeader(nalu []byte, spsMap map[uint32]*SPS, ppsMap map[uint32]*PP
 		sh.SliceGroupChangeCycle = uint32(r.Read(nrBits))
 	}
 
-	// compute the size in bytes. The last byte may not be fully parsed
 	sh.Size = uint32(r.NrBytesRead())
 	return &sh, nil
 }

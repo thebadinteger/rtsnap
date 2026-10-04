@@ -2,27 +2,17 @@ package h265
 
 import "image"
 
-// Picture is one decoded picture. Planes hold either 8-bit or 16-bit samples
-// depending on the bit depth, with Stride in samples.
 type Picture struct {
 	Width, Height int
 
-	// CropW and CropH are the dimensions after the conformance window, which
-	// is what a caller should display. Width and Height stay as decoded,
-	// since prediction reads the whole plane.
 	CropX, CropY int
 	CropW, CropH int
 
 	ChromaFormat int
 
-	// BitDepth and BitDepthC are the luma and chroma sample depths, which
-	// 7.4.3.2 lets differ. Both planes are stored 16-bit if either exceeds 8.
 	BitDepth  int
 	BitDepthC int
 
-	// ColorPrimaries, ColorTransfer, ColorMatrix and FullRange are what the
-	// sequence declares in its video usability information, as the code points
-	// of ISO/IEC 23091-2. All three are 2, unspecified, when it declares none.
 	ColorPrimaries uint16
 	ColorTransfer  uint16
 	ColorMatrix    uint16
@@ -43,10 +33,6 @@ type Picture struct {
 	refs int32
 }
 
-// Release hands the picture's memory back to the decoder that produced it, to
-// be reused by a later picture. It is optional: one that is never released is
-// collected as any other value would be. Reading the planes afterwards is a
-// mistake; releasing twice is not, and does nothing.
 func (p *Picture) Release() {
 	p.release()
 }
@@ -78,8 +64,6 @@ func (p *Picture) release() {
 	pool := p.pool
 	p.pool = nil
 
-	// Dropping the planes turns a read after release into a panic rather than
-	// a later picture's samples.
 	p.Col = nil
 	p.Y, p.Cb, p.Cr = nil, nil, nil
 	p.Y16, p.Cb16, p.Cr16 = nil, nil, nil
@@ -87,15 +71,12 @@ func (p *Picture) release() {
 	pool.put(g, b)
 }
 
-// picBufs is the sample memory of one picture, the only part worth recycling.
 type picBufs struct {
 	col             []colMotion
 	y, cb, cr       []uint8
 	y16, cb16, cr16 []uint16
 }
 
-// picGeom is everything that fixes a picture's buffer sizes, so a recycled one
-// needs no reallocation.
 type picGeom struct {
 	strideY, height  int
 	strideC, heightC int
@@ -112,12 +93,8 @@ func (p *Picture) geom() picGeom {
 	}
 }
 
-// picPoolDepth bounds how many pictures of one shape are kept, so a sequence
-// that changes resolution cannot make the pool grow without end.
 const picPoolDepth = 8
 
-// picPool holds the pictures nobody references any more. A decoder keeps one,
-// so everything it recycles came from the same sequence.
 type picPool struct {
 	free map[picGeom][]picBufs
 }
@@ -190,9 +167,6 @@ func newPicture(pool *picPool, s *sps) *Picture {
 		deep:   max(s.bitDepthLuma, s.bitDepthChroma) > 8,
 	}
 
-	// A recycled picture keeps only its buffers; everything derived from the
-	// sequence has already been filled in above, and the samples are zeroed so
-	// a reused one is indistinguishable from a fresh one.
 	if r, ok := pool.get(g); ok {
 		p.Col, p.Y, p.Cb, p.Cr = r.col, r.y, r.cb, r.cr
 		p.Y16, p.Cb16, p.Cr16 = r.y16, r.cb16, r.cr16
@@ -229,12 +203,10 @@ func newPicture(pool *picPool, s *sps) *Picture {
 	return p
 }
 
-// deep reports whether the planes hold 16-bit samples.
 func (p *Picture) deep() bool {
 	return p.Y16 != nil
 }
 
-// depth is the sample depth of one component.
 func (p *Picture) depth(cIdx int) int {
 	if cIdx == 0 {
 		return p.BitDepth
@@ -265,9 +237,6 @@ func (p *Picture) plane16(cIdx int) ([]uint16, int) {
 	}
 }
 
-// The collocated motion field, subsampled to 16x16 as 8.5.3.2.9 allows.
-// Reference pictures are held by POC so the collocated picture's own lists are
-// not needed later.
 type colMotion struct {
 	info    mvInfo
 	refPoc  [2]int32
@@ -279,7 +248,6 @@ func (p *Picture) colIndex(x, y int) int {
 	return (y>>4)*p.ColW + x>>4
 }
 
-// image converts decoded picture to standard image
 func (p *Picture) Image() image.Image {
 	w := p.CropW
 	if w <= 0 {
@@ -295,7 +263,6 @@ func (p *Picture) Image() image.Image {
 		sw, sh := 2, 2
 		switch p.ChromaFormat {
 		case 0:
-			// monochrome
 			rect := image.Rect(0, 0, w, h)
 			yOff := p.CropY*p.StrideY + p.CropX
 			return &image.Gray{

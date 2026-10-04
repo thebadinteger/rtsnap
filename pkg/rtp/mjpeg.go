@@ -128,7 +128,6 @@ func NewMJPEGDepacketizer() *MJPEGDepacketizer {
 	return &MJPEGDepacketizer{}
 }
 
-// decode reassembles rfc 2435 packets into complete jpeg image bytes
 func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	buf := pkt.Payload
 	if len(buf) < 8 {
@@ -202,13 +201,10 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		return nil, nil
 	}
 
-	// build complete jpeg bitstream
 	var out []byte
 
-	// soi
 	out = append(out, 0xFF, 0xD8)
 
-	// dqt
 	if len(d.quantTables) > 0 {
 		dqtLen := 2 + len(d.quantTables)*(1+64)
 		out = append(out, 0xFF, 0xDB, byte(dqtLen>>8), byte(dqtLen))
@@ -218,29 +214,24 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		}
 	}
 
-	// sof0 (baseline dct)
 	out = append(out, 0xFF, 0xC0)
-	out = append(out, 0x00, 0x11) // length 17
-	out = append(out, 0x08)       // precision 8
+	out = append(out, 0x00, 0x11)
+	out = append(out, 0x08)
 	out = append(out, byte(d.height>>8), byte(d.height))
 	out = append(out, byte(d.width>>8), byte(d.width))
-	out = append(out, 0x03) // 3 components
+	out = append(out, 0x03)
 
 	subH, subV := byte(1), byte(1)
 	if d.jpegType == 0 {
-		subH = 2 // 4:2:2
+		subH = 2
 	} else if d.jpegType == 1 {
-		subH = 2 // 4:2:0
+		subH = 2
 		subV = 2
 	}
-	// y
 	out = append(out, 0x01, (subH<<4)|subV, 0x00)
-	// cb
 	out = append(out, 0x02, 0x11, 0x01)
-	// cr
 	out = append(out, 0x03, 0x11, 0x01)
 
-	// dht
 	writeDHT := func(class, id byte, lens, symbols []byte) {
 		l := 2 + 1 + len(lens) + len(symbols)
 		out = append(out, 0xFF, 0xC4, byte(l>>8), byte(l))
@@ -253,22 +244,18 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	writeDHT(0, 1, chmDcCodeLens, chmDcSymbols)
 	writeDHT(1, 1, chmAcCodeLens, chmAcSymbols)
 
-	// dri
 	if d.restartInt > 0 {
 		out = append(out, 0xFF, 0xDD, 0x00, 0x04, byte(d.restartInt>>8), byte(d.restartInt))
 	}
 
-	// sos
 	out = append(out, 0xFF, 0xDA, 0x00, 0x0C, 0x03)
 	out = append(out, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11)
 	out = append(out, 0x00, 0x3F, 0x00)
 
-	// scan data
 	for _, f := range d.fragments {
 		out = append(out, f...)
 	}
 
-	// eoi
 	if len(out) < 2 || out[len(out)-2] != 0xFF || out[len(out)-1] != 0xD9 {
 		out = append(out, 0xFF, 0xD9)
 	}

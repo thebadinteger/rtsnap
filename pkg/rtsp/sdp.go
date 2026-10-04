@@ -56,7 +56,6 @@ type sdpSection struct {
 	fmtp     map[uint8]map[string]string
 }
 
-// parsesdp extracts all video tracks from sdp body
 func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 	lines := strings.Split(string(sdp), "\n")
 	var sections []sdpSection
@@ -220,7 +219,6 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 	return tracks, nil
 }
 
-// selecttrack chooses a track matching codec or uses default priority
 func SelectTrack(tracks []*MediaTrack, codec string) (*MediaTrack, error) {
 	if len(tracks) == 0 {
 		return nil, fmt.Errorf("no video tracks available")

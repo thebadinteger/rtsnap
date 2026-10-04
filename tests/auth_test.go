@@ -34,7 +34,6 @@ func TestAuthInvalidCredentials(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// wrong password
 	_, err = rtsnap.Snapshot(ctx, server.URL(), rtsnap.WithAuth("realuser", "wrongpassword"))
 	if err == nil {
 		t.Fatal("expected error with invalid credentials, got nil")
@@ -97,7 +96,6 @@ func TestAuthURLCredentials(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// embedded credentials in URL: rtsp://urluser:urlpassword@127.0.0.1:port/live
 	u := strings.Replace(server.URL(), "rtsp://", "rtsp://urluser:urlpassword@", 1)
 	img, err := rtsnap.Snapshot(ctx, u)
 	if err != nil {
@@ -109,18 +107,16 @@ func TestAuthURLCredentials(t *testing.T) {
 }
 
 func TestAuthUnitHeaders(t *testing.T) {
-	// test without qop
 	hdr := `Digest realm="myrealm", nonce="abcd1234"`
 	a := rtsp.NewAuth(hdr, "user1", "pass1")
 	if a == nil {
 		t.Fatal("failed to create auth")
 	}
-	res := a.Generate("DESCRIBE", "rtsp://host/path")
+	res := a.Generate("DESCRIBE", "rtsp://127.0.0.1/live")
 	if !strings.Contains(res, `realm="myrealm"`) || !strings.Contains(res, `nonce="abcd1234"`) {
 		t.Fatalf("malformed response: %s", res)
 	}
 
-	// test with unrecognized auth scheme
 	badAuth := rtsp.NewAuth(`NTLM realm="windows"`, "u", "p")
 	if badAuth != nil {
 		t.Fatalf("expected nil for unsupported auth scheme, got %v", badAuth)

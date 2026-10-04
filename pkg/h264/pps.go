@@ -7,7 +7,6 @@ import (
 	"io"
 )
 
-// PPS - Picture Parameter Set
 type PPS struct {
 	PicParameterSetID                     uint32
 	SeqParameterSetID                     uint32
@@ -38,12 +37,10 @@ type PPS struct {
 	SecondChromaQpIndexOffset             int
 }
 
-// AVC PPS errors
 var (
 	ErrNotPPS = errors.New("not an PPS NAL unit")
 )
 
-// ParsePPSNALUnit - Parse AVC PPS NAL unit starting with NAL header
 func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 	var err error
 
@@ -51,7 +48,6 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 
 	rd := bytes.NewReader(data)
 	reader := NewEBSPReader(rd)
-	// Note! First byte is NAL Header
 
 	naluHdr := reader.Read(8)
 	naluType := GetNaluType(byte(naluHdr))
@@ -84,7 +80,6 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 			pps.SliceGroupChangeDirectionFlag = reader.ReadFlag()
 			pps.SliceGroupChangeRateMinus1 = reader.ReadExpGolomb()
 		case 6:
-			// slice_group_id[i] has Ceil(Log2(num_slice_groups_minus1 +1) bits)
 			nrBits := CeilLog2(pps.NumSliceGroupsMinus1 + 1)
 
 			for iGroup := uint(0); iGroup <= pps.NumSliceGroupsMinus1; iGroup++ {
@@ -104,7 +99,6 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 	pps.ConstrainedIntraPredFlag = reader.ReadFlag()
 	pps.RedundantPicCntPresentFlag = reader.ReadFlag()
 	if !reader.IsSeeker() {
-		// Cannot call MoreRbspData, so cannot parse further
 		return pps, nil
 	}
 	moreRbsp, err := reader.MoreRbspData()
@@ -138,9 +132,9 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 						pps.PicScalingLists[i] = nil
 						continue
 					}
-					sizeOfScalingList := 16 // 4x4 for i < 6
+					sizeOfScalingList := 16
 					if i >= 6 {
-						sizeOfScalingList = 64 // 8x8 for i >= 6
+						sizeOfScalingList = 64
 					}
 					pps.PicScalingLists[i] = readScalingList(reader, sizeOfScalingList)
 				}

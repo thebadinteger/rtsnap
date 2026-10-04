@@ -4,8 +4,6 @@ import (
 	"fmt"
 )
 
-// DecodeMBTypeIntraCAVLC decodes mb_type for I-slices using CAVLC (ue(v)).
-// The ue(v) value maps directly to mb_type per Table 7-11.
 func DecodeMBTypeIntraCAVLC(br *BitReader) (int, error) {
 	val, err := br.ReadUE()
 	if err != nil {
@@ -17,13 +15,10 @@ func DecodeMBTypeIntraCAVLC(br *BitReader) (int, error) {
 	return int(val), nil
 }
 
-// DecodeTransformSize8x8FlagCAVLC decodes transform_size_8x8_flag using u(1).
 func DecodeTransformSize8x8FlagCAVLC(br *BitReader) (bool, error) {
 	return br.ReadFlag()
 }
 
-// DecodeIntra4x4PredModeCAVLC decodes prev_intra4x4_pred_mode_flag and rem_intra4x4_pred_mode.
-// Returns (prevFlag, rem).
 func DecodeIntra4x4PredModeCAVLC(br *BitReader) (bool, int, error) {
 	flag, err := br.ReadFlag()
 	if err != nil {
@@ -39,7 +34,6 @@ func DecodeIntra4x4PredModeCAVLC(br *BitReader) (bool, int, error) {
 	return false, int(rem), nil
 }
 
-// DecodeIntraChromaPredModeCAVLC decodes intra_chroma_pred_mode using ue(v).
 func DecodeIntraChromaPredModeCAVLC(br *BitReader) (int, error) {
 	val, err := br.ReadUE()
 	if err != nil {
@@ -51,8 +45,6 @@ func DecodeIntraChromaPredModeCAVLC(br *BitReader) (int, error) {
 	return int(val), nil
 }
 
-// DecodeCBPCAVLC decodes coded_block_pattern using me(v) for I-slices.
-// Returns (cbpLuma, cbpChroma).
 func DecodeCBPCAVLC(br *BitReader) (int, int, error) {
 	val, err := br.ReadUE()
 	if err != nil {
@@ -67,7 +59,6 @@ func DecodeCBPCAVLC(br *BitReader) (int, int, error) {
 	return cbpLuma, cbpChroma, nil
 }
 
-// DecodeQPDeltaCAVLC decodes mb_qp_delta using se(v).
 func DecodeQPDeltaCAVLC(br *BitReader) (int, error) {
 	val, err := br.ReadSE()
 	if err != nil {
@@ -76,14 +67,11 @@ func DecodeQPDeltaCAVLC(br *BitReader) (int, error) {
 	return int(val), nil
 }
 
-// DeriveNC derives the nC value for CAVLC coeff_token table selection.
-// Uses the non-zero coefficient counts from left (A) and top (B) neighbor blocks.
 func DeriveNC(sc *SliceContext, mbIdx int, blkIdx int, isChromaDC bool) int {
 	if isChromaDC {
 		return -1
 	}
 
-	// Get left and top non-zero coefficient counts
 	nA := -1
 	nB := -1
 
@@ -113,25 +101,21 @@ func DeriveNC(sc *SliceContext, mbIdx int, blkIdx int, isChromaDC bool) int {
 	return 0
 }
 
-// DeriveChromaNC derives the nC value for CAVLC chroma AC blocks.
-// blkIdx is the chroma block index: iCbCr*4 + i (0-7).
 func DeriveChromaNC(sc *SliceContext, mbIdx int, blkIdx int) int {
 	nA := -1
 	nB := -1
 
-	compBase := (blkIdx / 4) * 4 // 0 for Cb, 4 for Cr
-	localIdx := blkIdx % 4       // 0-3 within component
+	compBase := (blkIdx / 4) * 4
+	localIdx := blkIdx % 4
 	x := localIdx % 2
 	y := localIdx / 2
 
-	// Left neighbor
 	if x > 0 {
 		nA = sc.MBs[mbIdx].NzCoeffChroma[compBase+localIdx-1]
 	} else if mbA := sc.MBAvailA(mbIdx); mbA != nil {
 		nA = mbA.NzCoeffChroma[compBase+y*2+1]
 	}
 
-	// Top neighbor
 	if y > 0 {
 		nB = sc.MBs[mbIdx].NzCoeffChroma[compBase+localIdx-2]
 	} else if mbB := sc.MBAvailB(mbIdx); mbB != nil {

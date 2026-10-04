@@ -16,7 +16,6 @@ func NewH265Depacketizer() *H265Depacketizer {
 	return &H265Depacketizer{}
 }
 
-// decode extracts h265 nal units from an rtp packet
 func (d *H265Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 	if len(pkt.Payload) < 2 {
 		return nil, nil
@@ -32,7 +31,7 @@ func (d *H265Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 		return [][]byte{nalu}, nil
 
 	case nalType == 48:
-		// ap aggregation packet
+		// ap aggregation
 		var nalus [][]byte
 		buf := pkt.Payload[2:]
 		for len(buf) >= 2 {
@@ -49,7 +48,7 @@ func (d *H265Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 		return nalus, nil
 
 	case nalType == 49:
-		// fu fragmentation unit
+		// fu fragmentation
 		if len(pkt.Payload) < 3 {
 			return nil, fmt.Errorf("fu packet too short")
 		}

@@ -25,12 +25,10 @@ func makeTestJPEGScanData() ([]byte, int, int) {
 	_ = jpeg.Encode(&buf, src, &jpeg.Options{Quality: 50})
 	data := buf.Bytes()
 
-	// find start of scan (0xFF, 0xDA)
 	sosIdx := bytes.Index(data, []byte{0xFF, 0xDA})
 	if sosIdx == -1 {
 		return data, w, h
 	}
-	// skip SOS marker and length
 	sosLen := int(data[sosIdx+2])<<8 | int(data[sosIdx+3])
 	scanStart := sosIdx + 2 + sosLen
 	scanEnd := len(data)
@@ -56,21 +54,20 @@ func makeMJPEGPackets(scanData []byte, width, height int, fragments int) [][]byt
 
 		offset := start
 		hdr := []byte{
-			0x80, 0x1A, // PT=26 (JPEG)
-			0x00, byte(i + 1), // seq
-			0x00, 0x00, 0x02, 0x00, // ts
-			0x11, 0x22, 0x33, 0x44, // ssrc
+			0x80, 0x1A,
+			0x00, byte(i + 1),
+			0x00, 0x00, 0x02, 0x00,
+			0x11, 0x22, 0x33, 0x44,
 		}
 		if end == len(scanData) {
-			hdr[1] |= 0x80 // marker bit on last packet
+			hdr[1] |= 0x80 // marker bit
 		}
 
-		// rfc 2435 8-byte jpeg header
 		jpegHdr := []byte{
 			0x00,
 			byte(offset >> 16), byte(offset >> 8), byte(offset),
-			0x01, // type 4:2:0
-			50,   // Q=50
+			0x01,
+			50,
 			byte(width / 8),
 			byte(height / 8),
 		}

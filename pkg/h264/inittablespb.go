@@ -1,10 +1,6 @@
 package h264
 
-// cabacContextInitPB contains the (m, n) initialization values for P/B-slices.
-// Transcribed from FFmpeg cabac_context_init_PB (3 init_idc sets x 1024 entries).
-// Each entry is {m, n} where preCtxState = Clip3(1, 126, ((m * SliceQPY) >> 4) + n).
 var cabacContextInitPB = [3][1024][2]int8{
-	// cabac_init_idc == 0
 	{
 		{20, -15}, {2, 54}, {3, 74}, {20, -15},
 		{2, 54}, {3, 74}, {-28, 127}, {-23, 104},
@@ -263,7 +259,6 @@ var cabacContextInitPB = [3][1024][2]int8{
 		{-3, 74}, {-9, 92}, {-8, 87}, {-23, 126},
 		{-3, 74}, {-9, 92}, {-8, 87}, {-23, 126},
 	},
-	// cabac_init_idc == 1
 	{
 		{20, -15}, {2, 54}, {3, 74}, {20, -15},
 		{2, 54}, {3, 74}, {-28, 127}, {-23, 104},
@@ -522,7 +517,6 @@ var cabacContextInitPB = [3][1024][2]int8{
 		{-2, 73}, {-12, 104}, {-9, 91}, {-31, 127},
 		{-2, 73}, {-12, 104}, {-9, 91}, {-31, 127},
 	},
-	// cabac_init_idc == 2
 	{
 		{20, -15}, {2, 54}, {3, 74}, {20, -15},
 		{2, 54}, {3, 74}, {-28, 127}, {-23, 104},

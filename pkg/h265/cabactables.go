@@ -1,6 +1,5 @@
 package h265
 
-// Table 9-46.
 var rangeTabLPS = [64][4]uint8{
 	{128, 176, 208, 240},
 	{128, 167, 197, 227},
@@ -68,7 +67,6 @@ var rangeTabLPS = [64][4]uint8{
 	{2, 2, 2, 2},
 }
 
-// Table 9-47.
 var transIdxLPS = [64]uint8{
 	0, 0, 1, 2, 2, 4, 4, 5, 6, 7, 8, 9, 9, 11, 11, 12,
 	13, 13, 15, 15, 16, 16, 18, 18, 19, 19, 21, 21, 22, 22, 23, 24,
@@ -76,7 +74,6 @@ var transIdxLPS = [64]uint8{
 	33, 33, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 37, 38, 38, 63,
 }
 
-// Table 9-4.
 var initValues = [3][nContexts]uint8{
 	{
 		153, 200, 139, 141, 157, 154, 154, 154, 154, 154, 154, 154, 154, 184, 154, 154,
@@ -122,7 +119,6 @@ var initValues = [3][nContexts]uint8{
 	},
 }
 
-// Offsets of each syntax element's first context, 9.3.2.2.
 const (
 	ctxSAOMergeFlag                = 0
 	ctxSAOTypeIDX                  = 1
@@ -161,7 +157,6 @@ const (
 	ctxCUChromaQPOffsetIDX         = 178
 )
 
-// The 32-point inverse transform matrix.
 var transMatrix = [32][32]int8{
 	{
 		64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,

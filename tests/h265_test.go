@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/thebadinteger/rtsnap"
-	"github.com/thebadinteger/rtsnap/pkg/h265"
 )
 
 func makeRTPPacketsH265(rawNALs [][]byte) [][]byte {
@@ -27,17 +26,6 @@ func makeRTPPacketsH265(rawNALs [][]byte) [][]byte {
 		pkts = append(pkts, append(hdr, nal...))
 	}
 	return pkts
-}
-
-func extractH265RawNALs(data []byte) [][]byte {
-	var raw [][]byte
-	// split by 0x000001 or 0x00000001
-	for _, unit := range h265.SplitAnnexB(data) {
-		// reconstruct 2-byte header + rbsp (approximation or raw slice)
-		hdr := []byte{byte(unit.Type) << 1, unit.TemporalID + 1}
-		raw = append(raw, append(hdr, unit.RBSP...))
-	}
-	return raw
 }
 
 func splitAnnexBNALBytes(data []byte) [][]byte {

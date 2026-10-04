@@ -31,7 +31,6 @@ func TestWithCodecSelection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// success when requesting h264
 	img, err := rtsnap.Snapshot(ctx, srv.URL(), rtsnap.WithCodec(rtsnap.CodecH264))
 	if err != nil {
 		t.Fatalf("snapshot with h264 failed: %v", err)
@@ -40,7 +39,6 @@ func TestWithCodecSelection(t *testing.T) {
 		t.Fatal("expected decoded image, got nil")
 	}
 
-	// error when requesting non-existent codec
 	_, err = rtsnap.Snapshot(ctx, srv.URL(), rtsnap.WithCodec(rtsnap.CodecH265))
 	if err == nil {
 		t.Fatal("expected error requesting unavailable h265 from h264 stream, got nil")

@@ -2,7 +2,6 @@ package h265
 
 import "bytes"
 
-// NALType is the nal_unit_type field of a NAL unit header.
 type NALType uint8
 
 const (
@@ -39,22 +38,18 @@ const (
 	NALSuffixSEI
 )
 
-// IsVCL reports whether the unit carries a coded slice segment.
 func (t NALType) IsVCL() bool {
 	return t < 32
 }
 
-// IsIDR reports whether the unit starts an instantaneous decoding refresh picture.
 func (t NALType) IsIDR() bool {
 	return t == NALIdrWRadl || t == NALIdrNLP
 }
 
-// IsIRAP reports whether the unit starts an intra random access point picture.
 func (t NALType) IsIRAP() bool {
 	return t >= NALBlaWLP && t <= NALCra
 }
 
-// NALUnit is one parsed NAL unit.
 type NALUnit struct {
 	Type       NALType
 	LayerID    uint8
@@ -64,7 +59,6 @@ type NALUnit struct {
 	EPB []uint32
 }
 
-// ParseNAL parses a single NAL unit with a two-byte header and no framing.
 func ParseNAL(data []byte) (NALUnit, bool) {
 	if len(data) < 2 {
 		return NALUnit{}, false
@@ -91,7 +85,6 @@ func ParseNAL(data []byte) (NALUnit, bool) {
 	}, true
 }
 
-// SplitAnnexB splits a start-code delimited byte stream into NAL units.
 func SplitAnnexB(data []byte) []NALUnit {
 	var nals []NALUnit
 
@@ -125,7 +118,6 @@ func SplitAnnexB(data []byte) []NALUnit {
 	return nals
 }
 
-// SplitHVCC splits length-prefixed NAL units, as framed inside hvcC.
 func SplitHVCC(data []byte, lengthSize int) []NALUnit {
 	var nals []NALUnit
 
@@ -197,8 +189,6 @@ func unescape(data []byte) ([]byte, []uint32) {
 	return rbsp, epb
 }
 
-// RBSPOffset converts a payload-relative byte position, as entry point offsets
-// count them, into an index into RBSP.
 func (n NALUnit) RBSPOffset(off int) int {
 	rbsp := off
 
@@ -213,7 +203,6 @@ func (n NALUnit) RBSPOffset(off int) int {
 	return rbsp
 }
 
-// NALOffset is the inverse of RBSPOffset.
 func (n NALUnit) NALOffset(off int) int {
 	for _, p := range n.EPB {
 		if int(p) <= off {
@@ -262,28 +251,6 @@ func MarshalAnnexB(nals []NALUnit) []byte {
 	return marshalAnnexB(data)
 }
 
-func marshalHVCC(nals [][]byte, lengthSize int) []byte {
-	if lengthSize < 1 || lengthSize > 4 {
-		return nil
-	}
-
-	var out []byte
-
-	for _, nal := range nals {
-		if len(nal) == 0 || uint64(len(nal)) >= 1<<uint(lengthSize*8) {
-			return nil
-		}
-
-		for i := lengthSize - 1; i >= 0; i-- {
-			out = append(out, byte(len(nal)>>uint(i*8)))
-		}
-
-		out = append(out, nal...)
-	}
-
-	return out
-}
-
 func escapeRBSP(rbsp []byte) []byte {
 	out := make([]byte, 0, len(rbsp))
 	zeros := 0
@@ -306,9 +273,6 @@ func escapeRBSP(rbsp []byte) []byte {
 	return out
 }
 
-// ProfileTierLevel returns the twelve bytes of profile_tier_level, from
-// general_profile_space through general_level_idc, out of a sequence parameter
-// set RBSP. A container's decoder configuration record repeats them.
 func ProfileTierLevel(sps []byte) ([]byte, bool) {
 	if len(sps) < 13 {
 		return nil, false
@@ -317,10 +281,6 @@ func ProfileTierLevel(sps []byte) ([]byte, bool) {
 	return sps[1:13], true
 }
 
-// SPSFormat is the chroma_format_idc and the two sample sizes a sequence
-// parameter set declares. A container's decoder configuration record repeats
-// them, and a reader that trusts it over the bitstream has to be told the
-// truth.
 func SPSFormat(sps []byte) (chromaFormat, bitDepthLuma, bitDepthChroma int, ok bool) {
 	s, err := parseSPS(sps)
 	if err != nil {

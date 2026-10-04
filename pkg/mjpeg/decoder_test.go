@@ -9,7 +9,6 @@ import (
 )
 
 func TestMJPEGDecode(t *testing.T) {
-	// generate small test jpeg image
 	src := image.NewRGBA(image.Rect(0, 0, 32, 32))
 	for y := 0; y < 32; y++ {
 		for x := 0; x < 32; x++ {

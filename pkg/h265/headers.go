@@ -2,8 +2,6 @@ package h265
 
 import "errors"
 
-// ErrInvalid is returned for a bitstream that cannot be decoded, and
-// ErrUnsupported for one using a feature this decoder does not implement.
 var (
 	ErrInvalid     = errors.New("hevc: invalid bitstream")
 	ErrUnsupported = errors.New("hevc: unsupported feature")
@@ -77,8 +75,6 @@ type sps struct {
 
 	bitDepthLuma, bitDepthChroma uint8
 
-	// E.3.1: the color description of the sequence, unspecified unless the
-	// video usability information says otherwise.
 	colourPrimaries uint16
 	transferChar    uint16
 	matrixCoeffs    uint16
@@ -322,9 +318,6 @@ func parseVUI(c *getBits, s *sps, maxSubLayersMinus1 uint8) error {
 		c.bit()
 	}
 
-	// E.2.1 video_signal_type. The color description defaults to unspecified,
-	// which newPicture carries so a container with no description of its own
-	// can fall back to what the sequence declares.
 	if c.bit() != 0 {
 		c.bits(3)
 
@@ -478,7 +471,6 @@ func parseSPS(rbsp []byte) (*sps, error) {
 	var c getBits
 	c.init(rbsp)
 
-	// E.3.1 infers all three as unspecified when the sequence does not say.
 	s := &sps{colourPrimaries: 2, transferChar: 2, matrixCoeffs: 2}
 	s.vpsID = uint8(c.bits(4))
 	s.maxSubLayersMinus1 = uint8(c.bits(3))
@@ -570,9 +562,6 @@ func parseSPS(rbsp []byte) (*sps, error) {
 		return nil, ErrInvalid
 	}
 
-	// 7.4.3.2: both dimensions are an integer multiple of MinCbSizeY. Without
-	// it a coding unit at the edge extends past the picture, and the block
-	// bookkeeping is sized for what the picture holds.
 	if mask := uint32(1)<<s.minCbLog2SizeY - 1; s.picWidthInLumaSamples&mask != 0 ||
 		s.picHeightInLumaSamples&mask != 0 {
 		return nil, ErrInvalid
@@ -592,7 +581,6 @@ func parseSPS(rbsp []byte) (*sps, error) {
 	s.minTbLog2SizeY = 2 + uint8(log2MinTbSizeMinus2)
 	s.maxTbLog2SizeY = s.minTbLog2SizeY + uint8(log2DiffMaxMinTbSize)
 
-	// 7.4.3.2.1 holds MaxTbLog2SizeY to Min(CtbLog2SizeY, 5), which is 32.
 	if s.minTbLog2SizeY >= s.minCbLog2SizeY || s.maxTbLog2SizeY > min(s.ctbLog2SizeY, 5) {
 		return nil, ErrInvalid
 	}
@@ -698,9 +686,6 @@ func parseSPS(rbsp []byte) (*sps, error) {
 			s.cabacBypassAlignment = c.bit() != 0
 		}
 
-		// The tools below are parsed so the extension stays in step, but they
-		// are not applied. A stream that uses one is refused rather than
-		// decoded into something that merely looks plausible.
 		if s.implicitRdpcm || s.explicitRdpcm || s.cabacBypassAlignment {
 			return nil, ErrUnsupported
 		}
@@ -859,7 +844,6 @@ func parsePPS(rbsp []byte) (*pps, error) {
 			p.log2SaoOffsetScaleChroma = c.ue()
 		}
 
-		// Parsed to keep the extension in step, but not applied.
 		if p.crossComponentPrediction {
 			return nil, ErrUnsupported
 		}

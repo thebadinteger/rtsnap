@@ -1,9 +1,5 @@
-// Package cabac implements the Context-Adaptive Binary Arithmetic Coding (CABAC)
-// engine for H.264/AVC decoding as specified in section 9.3 of the standard.
 package h264
 
-// rangeTabLPS is Table 9-44 from the H.264 standard.
-// Indexed as rangeTabLPS[pStateIdx][qCodIRangeIdx] where qCodIRangeIdx = (codIRange >> 6) & 3.
 var rangeTabLPS = [64][4]uint16{
 	{128, 176, 208, 240},
 	{128, 167, 197, 227},
@@ -71,7 +67,6 @@ var rangeTabLPS = [64][4]uint16{
 	{2, 2, 2, 2},
 }
 
-// transIdxLPS is Table 9-45 from the H.264 standard — next state after LPS.
 var transIdxLPS = [64]uint8{
 	0, 0, 1, 2, 2, 4, 4, 5,
 	6, 7, 8, 9, 9, 11, 11, 12,
@@ -83,7 +78,6 @@ var transIdxLPS = [64]uint8{
 	36, 36, 37, 37, 37, 38, 38, 63,
 }
 
-// transIdxMPS is Table 9-45 from the H.264 standard — next state after MPS.
 var transIdxMPS = [64]uint8{
 	1, 2, 3, 4, 5, 6, 7, 8,
 	9, 10, 11, 12, 13, 14, 15, 16,

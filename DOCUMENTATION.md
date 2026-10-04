@@ -196,7 +196,7 @@ func Dial(ctx context.Context, rtspURL string, user, pass string) (*Client, erro
 Connects to an RTSP server over TCP (or TLS for `rtsps://`)
 - **Parameters**:
   - `ctx` - Context controlling connection timeout
-  - `rtspURL` - Full RTSP address (e.g. `rtsp://camera.local:554/live`)
+  - `rtspURL` - Full RTSP address (e.g. `rtsp://192.168.1.100:554/live`)
   - `user` - Optional username for authentication
   - `pass` - Optional password for authentication
 - **Returns**:
@@ -519,10 +519,10 @@ go func() {
 | Symptom | Cause | Solution |
 |---|---|---|
 | `describe rejected: 401 Unauthorized` | Protected stream missing valid credentials | Pass credentials via `WithAuth("user", "pass")` or embedded in the URL (`rtsp://user:pass@host:554/live`) |
-| `no video tracks found in sdp` | Stream is audio-only or uses non-standard SDP attributes | Verify camera stream has video enabled in camera settings |
+| `no video tracks found in sdp` | Stream is audio-only or uses non-standard SDP attributes | Verify stream has video enabled in camera settings |
 | `requested codec "h265" not found (available: [h264])` | Stream does not support requested codec | Use `WithCodec(rtsnap.CodecAuto)` or request an available codec |
-| `context deadline exceeded` | Camera takes longer than timeout to produce an I-frame | Increase timeout via `WithTimeout(10*time.Second)` or reduce GOP size in camera settings |
-| Parameter sets missing in SDP | Camera sends SPS/PPS in-band instead of SDP | Handled automatically by extracting parameter sets directly from the incoming RTP NAL stream |
+| `context deadline exceeded` | Server takes longer than timeout to produce an I-frame | Increase timeout via `WithTimeout(10*time.Second)` or reduce GOP size in camera settings |
+| Parameter sets missing in SDP | Server sends SPS/PPS in-band instead of SDP | Handled automatically by extracting parameter sets directly from the incoming RTP NAL stream |
 | RTCP packets received | Interleaved channel multiplexing | Handled automatically by verifying channel matches `client.RTPChannel()` |
 
 ## 8. Testing with the Mock Server

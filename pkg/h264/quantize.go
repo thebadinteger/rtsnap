@@ -1,10 +1,5 @@
-// Package transform implements inverse quantization and inverse transform
-// for H.264/AVC decoding as specified in section 8.5 of the standard.
 package h264
 
-// LevelScale4x4 is the dequantization scaling factor table for 4x4 blocks.
-// Indexed by QP%6 and position (i,j)%3 mapping.
-// From Table 8-13 of the standard.
 var LevelScale4x4 = [6][3]int32{
 	{10, 13, 16},
 	{11, 14, 18},
@@ -14,8 +9,6 @@ var LevelScale4x4 = [6][3]int32{
 	{18, 23, 29},
 }
 
-// LevelScale8x8 contains dequant scale factors for 8x8 (Table 8-14).
-// Indexed by QP%6 and scan position mapping.
 var LevelScale8x8 = [6][6]int32{
 	{20, 18, 32, 19, 25, 24},
 	{22, 19, 35, 21, 28, 26},
@@ -25,7 +18,6 @@ var LevelScale8x8 = [6][6]int32{
 	{36, 32, 58, 34, 46, 43},
 }
 
-// DefaultScalingList4x4 is the flat default 4x4 scaling matrix (all 16s).
 var DefaultScalingList4x4 = [16]int32{
 	16, 16, 16, 16,
 	16, 16, 16, 16,
@@ -33,8 +25,6 @@ var DefaultScalingList4x4 = [16]int32{
 	16, 16, 16, 16,
 }
 
-// DefaultScalingList8x8 is the flat default 8x8 scaling matrix (all 16s).
-// Used when seq_scaling_matrix_present_flag = 0 (no custom scaling lists in SPS).
 var DefaultScalingList8x8 = [64]int32{
 	16, 16, 16, 16, 16, 16, 16, 16,
 	16, 16, 16, 16, 16, 16, 16, 16,
@@ -46,8 +36,6 @@ var DefaultScalingList8x8 = [64]int32{
 	16, 16, 16, 16, 16, 16, 16, 16,
 }
 
-// SpecDefaultScalingList8x8Intra is the spec's non-flat default 8x8 intra scaling matrix.
-// Used when seq_scaling_matrix_present_flag = 1 but individual list uses default.
 var SpecDefaultScalingList8x8Intra = [64]int32{
 	6, 10, 13, 16, 18, 23, 25, 27,
 	10, 11, 16, 18, 23, 25, 27, 29,
@@ -59,11 +47,6 @@ var SpecDefaultScalingList8x8Intra = [64]int32{
 	27, 29, 31, 33, 36, 38, 40, 42,
 }
 
-// Dequant4x4 performs inverse quantization on a 4x4 block of coefficients.
-// coeffs: 16 coefficients in raster scan order.
-// qp: quantization parameter.
-// scalingList: 4x4 scaling list (nil = use default flat 16).
-// isIntra: true for intra blocks.
 func Dequant4x4(coeffs [16]int32, qp int, scalingList *[16]int32) [16]int32 {
 	var result [16]int32
 
@@ -79,7 +62,6 @@ func Dequant4x4(coeffs [16]int32, qp int, scalingList *[16]int32) [16]int32 {
 		if coeffs[i] == 0 {
 			continue
 		}
-		// Position mapping for LevelScale
 		row := i / 4
 		col := i % 4
 		v := levelScaleIdx(row, col)
@@ -94,8 +76,6 @@ func Dequant4x4(coeffs [16]int32, qp int, scalingList *[16]int32) [16]int32 {
 	return result
 }
 
-// levelScaleIdx maps a (row, col) position to the LevelScale index.
-// The mapping depends on (i%2, j%2): (0,0)->0, (0,1)or(1,0)->1, (1,1)->2.
 func levelScaleIdx(row, col int) int {
 	r := row % 2
 	c := col % 2
@@ -108,7 +88,6 @@ func levelScaleIdx(row, col int) int {
 	return 1
 }
 
-// Dequant8x8 performs inverse quantization on an 8x8 block.
 func Dequant8x8(coeffs [64]int32, qp int, scalingList *[64]int32) [64]int32 {
 	var result [64]int32
 
@@ -138,14 +117,6 @@ func Dequant8x8(coeffs [64]int32, qp int, scalingList *[64]int32) [64]int32 {
 	return result
 }
 
-// levelScale8x8Idx maps (row, col) to the 8x8 LevelScale index.
-// Uses a 4x4 repeating pattern matching Table 8-14 of the spec.
-// Pattern (indexed by row%4, col%4):
-//
-//	v0  v3  v4  v3
-//	v3  v1  v5  v1
-//	v4  v5  v2  v5
-//	v3  v1  v5  v1
 var normAdjust8x8 = [4][4]int{
 	{0, 3, 4, 3},
 	{3, 1, 5, 1},
@@ -157,9 +128,6 @@ func levelScale8x8Idx(row, col int) int {
 	return normAdjust8x8[row%4][col%4]
 }
 
-// DequantDC4x4 performs inverse quantization on 16x16 intra DC coefficients.
-// The DC coefficients get a special scaling after the 4x4 Hadamard
-// weightScaleDC is the scaling list value at position (0,0), typically 16 for flat default.
 func DequantDC4x4(coeffs [16]int32, qp int, weightScaleDC int32) [16]int32 {
 	var result [16]int32
 
@@ -180,8 +148,6 @@ func DequantDC4x4(coeffs [16]int32, qp int, weightScaleDC int32) [16]int32 {
 	return result
 }
 
-// DequantChromaDC2x2 performs inverse quantization on chroma DC coefficients (4:2:0).
-// weightScaleDC is the chroma scaling list value at position (0,0), typically 16 for flat default.
 func DequantChromaDC2x2(coeffs [4]int32, qpc int, weightScaleDC int32) [4]int32 {
 	var result [4]int32
 
@@ -194,7 +160,6 @@ func DequantChromaDC2x2(coeffs [4]int32, qpc int, weightScaleDC int32) [4]int32 
 			result[i] = coeffs[i] * levelScale << uint(qpPer-5)
 		}
 	} else {
-		// No rounding bias — matches FFmpeg's (c * qmul) >> 7 truncation.
 		for i := range 4 {
 			result[i] = (coeffs[i] * levelScale) >> uint(5-qpPer)
 		}

@@ -10,7 +10,6 @@ import (
 )
 
 func main() {
-	// create context with strict deadline
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

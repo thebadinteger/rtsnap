@@ -1,6 +1,5 @@
 package h265
 
-// Table 8-12.
 var betaTable = [52]uint8{
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24,
@@ -15,7 +14,6 @@ var tcTable = [54]uint8{
 	14, 16, 18, 20, 22, 24,
 }
 
-// blockInfo is what boundary strength derivation reads back after decoding.
 type blockInfo struct {
 	intra bool
 	cbf   bool
@@ -29,8 +27,6 @@ func (d *ctuDecoder) blkIndex(x, y int) int {
 	return (y>>2)*d.mvWidth + x>>2
 }
 
-// blocksIn is how many blocks of a region fall inside the picture, so the
-// loops that walk one need no bound on each block.
 func (d *ctuDecoder) blocksIn(x, y, w, h, log2 int) (int, int) {
 	last := 1<<log2 - 1
 
@@ -52,8 +48,6 @@ func (d *ctuDecoder) markTU(x, y, w, h int, cbf bool) {
 			}
 		}
 
-		// The edges of 8.7.2 are the first column and the first row of the
-		// block, so only those carry a flag.
 		if j == 0 {
 			for i := range row {
 				row[i].tuH = true
@@ -84,7 +78,6 @@ func (d *ctuDecoder) markPU(x, y, w, h int, intra bool) {
 	}
 }
 
-// boundaryStrength is 8.7.2.4.
 func (d *ctuDecoder) boundaryStrength(xP, yP, xQ, yQ int, vertical bool) int {
 	qi := d.blkIndex(xQ, yQ)
 	q := &d.blk[qi]
@@ -96,8 +89,6 @@ func (d *ctuDecoder) boundaryStrength(xP, yP, xQ, yQ int, vertical bool) int {
 		tu, pu = q.tuH, q.puH
 	}
 
-	// 8.7.2 filters transform and prediction block edges only, not every
-	// edge on the eight-sample grid, and most of them are neither.
 	if !tu && !pu {
 		return 0
 	}
@@ -128,8 +119,6 @@ func mvFar(a, b mv) bool {
 	return absI32(int32(a.x)-int32(b.x)) >= 4 || absI32(int32(a.y)-int32(b.y)) >= 4
 }
 
-// differentMotion is the motion part of 8.7.2.4, comparing the pictures each
-// block recorded when it was decoded.
 func differentMotion(p, q *mvInfo, pPoc, qPoc [2]int32) bool {
 	var (
 		pp, qp [2]int32
@@ -177,8 +166,6 @@ func differentMotion(p, q *mvInfo, pPoc, qPoc [2]int32) bool {
 	return true
 }
 
-// sliceAt is the slice header governing a coding tree block. The filtering
-// parameters of 7.4.7.1 are per slice.
 func (d *ctuDecoder) sliceAt(x, y int) *sliceHeader {
 	rs := (y>>d.s.ctbLog2SizeY)*int(d.s.picWidthInCtbs) + x>>d.s.ctbLog2SizeY
 	if rs < 0 || rs >= len(d.ctbSlice) || int(d.ctbSlice[rs]) >= len(d.slices) {
@@ -188,9 +175,6 @@ func (d *ctuDecoder) sliceAt(x, y int) *sliceHeader {
 	return d.slices[d.ctbSlice[rs]]
 }
 
-// deblock is 8.7.2: every vertical edge in the picture, then every horizontal
-// one, both on the eight-sample grid. Within a pass each edge writes its own
-// band of eight lines, so the bands split across workers.
 func (d *ctuDecoder) deblock() {
 	w, h := int(d.s.picWidthInLumaSamples), int(d.s.picHeightInLumaSamples)
 
@@ -216,8 +200,6 @@ func (d *ctuDecoder) deblock() {
 }
 
 func (d *ctuDecoder) deblockEdge(x, y int, vertical bool) {
-	// The two sides share a coding tree block unless the edge sits on one of
-	// its boundaries, and 8.7.2 only asks about tiles and slices when they do.
 	ctb := 1<<d.s.ctbLog2SizeY - 1
 
 	across := x&ctb == 0
@@ -280,8 +262,6 @@ func (d *ctuDecoder) deblockEdge(x, y int, vertical bool) {
 
 		qp := (int32(d.qpY[pt]) + int32(d.qpY[qt]) + 1) >> 1
 
-		// 8.7.2.5.3 leaves a side untouched when its coding unit bypassed the
-		// transform, or is pulse code modulated with filtering turned off.
 		noP[k>>2], noQ[k>>2] = d.noFilter[pt], d.noFilter[qt]
 
 		if beta, tc := betaTc(qp, bs, sl, d.pic.BitDepth); beta != 0 && tc != 0 {
@@ -312,7 +292,6 @@ func (d *ctuDecoder) deblockEdge(x, y int, vertical bool) {
 	}
 }
 
-// deblockChromaEdge is 8.7.2.5.5 over one edge, both groups sharing a call.
 func (d *ctuDecoder) deblockChromaEdge(x, y int, vertical bool, sl *sliceHeader,
 	on *[2]bool, qp *[2]int32, noP, noQ *[2]bool,
 ) {
@@ -322,8 +301,6 @@ func (d *ctuDecoder) deblockChromaEdge(x, y int, vertical bool, sl *sliceHeader,
 
 	sw, sh := d.s.subWidthC, d.s.subHeightC
 
-	// The four-sample luma segment spans 4/subHeightC chroma rows on a
-	// vertical edge, and 4/subWidthC columns on a horizontal one.
 	n := 4 / sh
 	if !vertical {
 		n = 4 / sw
@@ -389,7 +366,6 @@ func betaTc(qp int32, bs int, sh *sliceHeader, bitDepth int) (int32, int32) {
 	return beta, tc
 }
 
-// lumaPlan is what 8.7.2.5.3 decides for one group of four lines.
 type lumaPlan struct {
 	tc       int32
 	mode     uint8
@@ -402,7 +378,6 @@ const (
 	lumaNormal
 )
 
-// deblockLumaPlan is 8.7.2.5.3 over the outer two lines of a group.
 func deblockLumaPlan[P pixel](plane []P, base, line, step int, beta, tc int32) lumaPlan {
 	at := func(l, i int) int32 {
 		return int32(plane[base+l*line+i*step])
@@ -441,7 +416,6 @@ func deblockLumaPlan[P pixel](plane []P, base, line, step int, beta, tc int32) l
 	return pl
 }
 
-// deblockLumaApply is 8.7.2.5.7 over the four lines its plan was taken from.
 func deblockLumaApply[P pixel](plane []P, base, line, step int, pl lumaPlan,
 	bitDepth int, noP, noQ bool,
 ) {
@@ -501,7 +475,6 @@ func deblockLumaApply[P pixel](plane []P, base, line, step int, pl lumaPlan,
 	}
 }
 
-// deblockLumaEdge filters the eight lines of one edge, both groups at once.
 func deblockLumaEdge[P pixel](plane []P, base, line, step int, pl [2]lumaPlan,
 	bitDepth int, noP, noQ [2]bool,
 ) {
@@ -538,7 +511,6 @@ func deblockLumaEdge[P pixel](plane []P, base, line, step int, pl [2]lumaPlan,
 	}
 }
 
-// lumaBoth gives a group without a filter the other's, at a tc of zero.
 func lumaBoth(pl *[2]lumaPlan, noP, noQ *[2]bool) (uint8, bool) {
 	a, b := 0, 1
 	if pl[0].mode == lumaNone {
@@ -553,7 +525,6 @@ func lumaBoth(pl *[2]lumaPlan, noP, noQ *[2]bool) (uint8, bool) {
 	return pl[0].mode, pl[0].mode == pl[1].mode && noP[0] == noP[1] && noQ[0] == noQ[1]
 }
 
-// deblockLuma8 hands one edge to a kernel, turning it first when it runs down.
 func deblockLuma8(p []uint8, base, line, step int, mode uint8, pl [2]lumaPlan, flags int32) bool {
 	strong, normal := deblockStrongAsm, deblockNormalAsm
 	if strong == nil || normal == nil {
@@ -594,7 +565,6 @@ func deblockLuma8(p []uint8, base, line, step int, mode uint8, pl [2]lumaPlan, f
 	return true
 }
 
-// deblockChromaPair is 8.7.2.5.5 over both components at once.
 func deblockChromaPair[P pixel](cb, cr []P, stride, x, y, n int, vertical bool,
 	tcCb, tcCr int32, bitDepth int, noP, noQ bool,
 ) {
@@ -634,8 +604,6 @@ func chromaLine[P pixel](plane []P, off, step int, tc, maxV int32, noP, noQ bool
 	}
 }
 
-// filterEdge is the filterEdgeFlag derivation of 8.7.2, which suppresses
-// filtering across a tile or slice boundary the parameter sets close off.
 func (d *ctuDecoder) filterEdge(xP, yP, xQ, yQ int) bool {
 	w := int(d.s.picWidthInCtbs)
 

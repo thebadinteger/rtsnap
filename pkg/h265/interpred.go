@@ -1,7 +1,5 @@
 package h265
 
-// Table 8-11.
-// lumaFilter16 is the same table at the width the kernels multiply in.
 var lumaFilter16 = func() [4][8]int16 {
 	var f [4][8]int16
 
@@ -21,8 +19,6 @@ var lumaFilter = [4][8]int32{
 	{0, 1, -5, 17, 58, -10, 4, -1},
 }
 
-// Table 8-12.
-// chromaFilter16 is the same table at the width the kernels multiply in.
 var chromaFilter16 = func() [8][4]int16 {
 	var f [8][4]int16
 
@@ -58,8 +54,6 @@ func clampInt(v, lo, hi int) int {
 	return v
 }
 
-// mcLuma is the luma sample interpolation of 8.5.3.3.3.1. It writes the
-// 14-bit intermediate the weighted prediction process consumes.
 func mcLuma[P pixel](dst []int16, dstStride int, src []P, srcStride, picW, picH,
 	x, y, xFrac, yFrac, w, h, bitDepth int, scratch []int32, tmp16 []int16, pad []P,
 ) {
@@ -67,9 +61,6 @@ func mcLuma[P pixel](dst []int16, dstStride int, src []P, srcStride, picW, picH,
 	shift2 := 6
 	shift3 := max(2, 14-bitDepth)
 
-	// The eight-tap support reaches three samples back and four forward. When
-	// it leaves the picture the region is copied out once with the edge
-	// clamping of 8.5.3.3.3, so the filters below index the source directly.
 	ox, ew := 0, w
 	if xFrac != 0 {
 		ox, ew = -3, w+7
@@ -91,8 +82,6 @@ func mcLuma[P pixel](dst []int16, dstStride int, src []P, srcStride, picW, picH,
 		return int32(src[py*srcStride+px])
 	}
 
-	// The kernels cover eight-bit samples at widths they can step through
-	// whole; anything else falls to the loops below.
 	asm := mcTapAsm
 	if bitDepth != 8 || w%8 != 0 {
 		asm = nil
@@ -198,7 +187,6 @@ func mcLuma[P pixel](dst []int16, dstStride int, src []P, srcStride, picW, picH,
 	}
 }
 
-// mcChroma is the chroma sample interpolation of 8.5.3.3.3.2.
 func mcChroma[P pixel](dst []int16, dstStride int, src []P, srcStride, picW, picH,
 	x, y, xFrac, yFrac, w, h, bitDepth int, scratch []int32, tmp16 []int16, pad []P,
 ) {
@@ -206,7 +194,6 @@ func mcChroma[P pixel](dst []int16, dstStride int, src []P, srcStride, picW, pic
 	shift2 := 6
 	shift3 := max(2, 14-bitDepth)
 
-	// The four-tap support reaches one sample back and two forward.
 	ox, ew := 0, w
 	if xFrac != 0 {
 		ox, ew = -1, w+3
@@ -330,16 +317,12 @@ func mcChroma[P pixel](dst []int16, dstStride int, src []P, srcStride, picW, pic
 	}
 }
 
-// emulate copies a region out of a reference picture, repeating the edge
-// samples where it falls outside, so a filter reading it needs no bounds
-// check.
 func emulate[P pixel](dst []P, src []P, srcStride, picW, picH, x, y, w, h int) {
 	for j := range h {
 		sy := clampInt(y+j, 0, picH-1)
 		row := src[sy*srcStride:]
 		out := dst[j*w : j*w+w]
 
-		// The inside part is a copy; only the overhang repeats.
 		lo := clampInt(-x, 0, w)
 		hi := clampInt(picW-x, 0, w)
 
@@ -357,7 +340,6 @@ func emulate[P pixel](dst []P, src []P, srcStride, picW, picH, x, y, w, h int) {
 	}
 }
 
-// predUni is the default uni-prediction of 8.5.3.3.4.2.
 func predUni[P pixel](dst []P, dstOff, dstStride int, src []int16, srcStride, w, h, bitDepth int) {
 	shift := max(2, 14-bitDepth)
 
@@ -392,7 +374,6 @@ func predUniGo[P pixel](dst []P, dstOff, dstStride int, src []int16, srcStride, 
 	}
 }
 
-// predBi is the default bi-prediction of 8.5.3.3.4.2.
 func predBi[P pixel](dst []P, dstOff, dstStride int, a, b []int16, srcStride, w, h, bitDepth int) {
 	shift := max(2, 14-bitDepth) + 1
 
@@ -429,7 +410,6 @@ func predBiGo[P pixel](dst []P, dstOff, dstStride int, a, b []int16, srcStride, 
 	}
 }
 
-// weightUni is the explicit weighted uni-prediction of 8.5.3.3.4.3.
 func weightUni[P pixel](dst []P, dstOff, dstStride int, src []int16, srcStride,
 	w, h, weight, offset, denom, bitDepth int, highPrecision bool,
 ) {
@@ -457,7 +437,6 @@ func weightUni[P pixel](dst []P, dstOff, dstStride int, src []int16, srcStride,
 	}
 }
 
-// weightBi is the explicit weighted bi-prediction of 8.5.3.3.4.3.
 func weightBi[P pixel](dst []P, dstOff, dstStride int, a, b []int16, srcStride,
 	w, h, w0, w1, o0, o1, denom, bitDepth int, highPrecision bool,
 ) {

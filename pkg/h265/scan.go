@@ -49,7 +49,6 @@ func buildVerScan(size int) []scanPos {
 	return scan
 }
 
-// scanOrder is ScanOrder[log2BlockSize][scanIdx] of 6.5.
 var scanOrder [maxScanLog2 + 1][nScanOrders][]scanPos
 
 func init() {

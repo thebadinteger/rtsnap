@@ -5,27 +5,17 @@ import (
 	"fmt"
 )
 
-// NaluType - AVC NAL unit type
 type NaluType uint16
 
 const (
-	// NALU_NON_IDR - Non-IDR Slice NAL unit
 	NALU_NON_IDR = NaluType(1)
-	// NALU_IDR - IDR Random Access Slice NAL Unit
 	NALU_IDR = NaluType(5)
-	// NALU_SEI - Supplementary Enhancement Information NAL Unit
 	NALU_SEI = NaluType(6)
-	// NALU_SPS - SequenceParameterSet NAL Unit
 	NALU_SPS = NaluType(7)
-	// NALU_PPS - PictureParameterSet NAL Unit
 	NALU_PPS = NaluType(8)
-	// NALU_AUD - AccessUnitDelimiter NAL Unit
 	NALU_AUD = NaluType(9)
-	// NALU_EO_SEQ - End of Sequence NAL Unit
 	NALU_EO_SEQ = NaluType(10)
-	// NALU_EO_STREAM - End of Stream NAL Unit
 	NALU_EO_STREAM = NaluType(11)
-	// NALU_FILL - Filler NAL Unit
 	NALU_FILL = NaluType(12)
 )
 
@@ -54,12 +44,10 @@ func (a NaluType) String() string {
 	}
 }
 
-// GetNaluType - get NALU type from  NALU Header byte
 func GetNaluType(naluHeader byte) NaluType {
 	return NaluType(naluHeader & 0x1f)
 }
 
-// FindNaluTypes - find list of NAL unit types in sample
 func FindNaluTypes(sample []byte) []NaluType {
 	length := len(sample)
 	if length < 4 {
@@ -77,7 +65,6 @@ func FindNaluTypes(sample []byte) []NaluType {
 	return naluList
 }
 
-// FindNaluTypesUpToFirstVideoNALU - find list of NAL unit types in sample
 func FindNaluTypesUpToFirstVideoNALU(sample []byte) []NaluType {
 	length := len(sample)
 	if length < 4 {
@@ -92,18 +79,16 @@ func FindNaluTypesUpToFirstVideoNALU(sample []byte) []NaluType {
 		naluList = append(naluList, naluType)
 		pos += naluLength
 		if IsVideoNaluType(naluType) {
-			break // first video nalu
+			break
 		}
 	}
 	return naluList
 }
 
-// IsIDRSample - does sample contain IDR NALU
 func IsIDRSample(sample []byte) bool {
 	return ContainsNaluType(sample, NALU_IDR)
 }
 
-// ContainsNaluType - is specific NaluType present in sample
 func ContainsNaluType(sample []byte, specificNalType NaluType) bool {
 	var pos uint32 = 0
 	length := len(sample)
@@ -119,7 +104,6 @@ func ContainsNaluType(sample []byte, specificNalType NaluType) bool {
 	return false
 }
 
-// HasParameterSets - Check if H.264 SPS and PPS are present
 func HasParameterSets(b []byte) bool {
 	naluTypeList := FindNaluTypesUpToFirstVideoNALU(b)
 	hasSPS := false
@@ -138,7 +122,6 @@ func HasParameterSets(b []byte) bool {
 	return false
 }
 
-// GetParameterSets - get (multiple) SPS and PPS from a sample
 func GetParameterSets(sample []byte) (sps [][]byte, pps [][]byte) {
 	sampleLength := uint32(len(sample))
 	var pos uint32 = 0
@@ -153,14 +136,13 @@ naluLoop:
 		case naluType == NALU_PPS:
 			pps = append(pps, sample[pos:pos+naluLength])
 		case IsVideoNaluType(naluType):
-			break naluLoop //SPS and PPS must come before video
+			break naluLoop
 		}
 		pos += naluLength
 	}
 	return sps, pps
 }
 
-// IsVideoNaluType returns true if nalu type is a VCL nalu.
 func IsVideoNaluType(naluType NaluType) bool {
 	const highestVideoNaluType = 5
 	return naluType <= highestVideoNaluType

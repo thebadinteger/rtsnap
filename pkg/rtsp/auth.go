@@ -10,11 +10,10 @@ import (
 	"strings"
 )
 
-// auth manages rtsp authentication state
 type Auth struct {
 	Username string
 	Password string
-	Method   string // basic or digest
+	Method   string
 	Realm    string
 	Nonce    string
 	Qop      string
@@ -69,7 +68,6 @@ func parseAuthHeader(header string) map[string]string {
 	return params
 }
 
-// newAuth creates an auth handler from www-authenticate header
 func NewAuth(wwwAuth, username, password string) *Auth {
 	params := parseAuthHeader(wwwAuth)
 	scheme := params["_scheme"]
@@ -108,14 +106,12 @@ func randomCnonce() string {
 	return hex.EncodeToString(b[:])
 }
 
-// generate returns the authorization header value
 func (a *Auth) Generate(method, uri string) string {
 	if a.Method == "basic" {
 		creds := a.Username + ":" + a.Password
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
 	}
 
-	// digest authentication
 	ha1 := a.hash(a.Username + ":" + a.Realm + ":" + a.Password)
 	ha2 := a.hash(method + ":" + uri)
 

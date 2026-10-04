@@ -128,34 +128,30 @@ func TestH264SnapshotFUA(t *testing.T) {
 	nalus := h264.ExtractNalusFromByteStream(data)
 	var pkts [][]byte
 
-	// send sps and pps as single nalus
 	for i := 0; i < len(nalus)-1; i++ {
 		hdr := []byte{0x80, 0x60, 0x00, byte(i + 1), 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
 		pkts = append(pkts, append(hdr, nalus[i]...))
 	}
 
-	// split idr into two fu-a fragments
 	idr := nalus[len(nalus)-1]
 	idrHeader := idr[0]
 	idrPayload := idr[1:]
 	half := len(idrPayload) / 2
 
-	// fragment 1 (start)
 	fuaHdr1 := []byte{
-		(idrHeader & 0x60) | 28,   // FU indicator
-		0x80 | (idrHeader & 0x1f), // FU header: start=1, end=0
+		(idrHeader & 0x60) | 28,
+		0x80 | (idrHeader & 0x1f),
 	}
 	rtpHdr1 := []byte{0x80, 0x60, 0x00, 0x10, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
 	pkt1 := append(rtpHdr1, fuaHdr1...)
 	pkt1 = append(pkt1, idrPayload[:half]...)
 	pkts = append(pkts, pkt1)
 
-	// fragment 2 (end)
 	fuaHdr2 := []byte{
 		(idrHeader & 0x60) | 28,
-		0x40 | (idrHeader & 0x1f), // FU header: start=0, end=1
+		0x40 | (idrHeader & 0x1f),
 	}
-	rtpHdr2 := []byte{0x80, 0xe0, 0x00, 0x11, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44} // marker bit set
+	rtpHdr2 := []byte{0x80, 0xe0, 0x00, 0x11, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44} // marker bit
 	pkt2 := append(rtpHdr2, fuaHdr2...)
 	pkt2 = append(pkt2, idrPayload[half:]...)
 	pkts = append(pkts, pkt2)
@@ -190,9 +186,8 @@ func TestH264SnapshotSTAPA(t *testing.T) {
 	nalus := h264.ExtractNalusFromByteStream(data)
 	var pkts [][]byte
 
-	// pack sps and pps into stap-a
 	var stapPayload []byte
-	stapPayload = append(stapPayload, 24) // stap-a type
+	stapPayload = append(stapPayload, 24)
 	for i := 0; i < len(nalus)-1; i++ {
 		size := len(nalus[i])
 		stapPayload = append(stapPayload, byte(size>>8), byte(size))
@@ -201,7 +196,6 @@ func TestH264SnapshotSTAPA(t *testing.T) {
 	hdr1 := []byte{0x80, 0x60, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
 	pkts = append(pkts, append(hdr1, stapPayload...))
 
-	// send idr
 	idr := nalus[len(nalus)-1]
 	hdr2 := []byte{0x80, 0xe0, 0x00, 0x02, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
 	pkts = append(pkts, append(hdr2, idr...))
@@ -254,7 +248,6 @@ func TestH264SnapshotJPEG(t *testing.T) {
 		t.Fatal("expected non-empty jpeg bytes")
 	}
 
-	// verify decoded jpeg
 	img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
 	if err != nil {
 		t.Fatalf("decode jpeg bytes failed: %v", err)

@@ -5,9 +5,6 @@ import (
 	"sync"
 )
 
-// Threads bounds the goroutines decoding one picture's wavefront rows. Zero
-// means GOMAXPROCS, one decodes serially. It is read once per slice segment,
-// so changing it mid-stream takes effect at the next one.
 func (d *Decoder) Threads(n int) { d.threads = n }
 
 func (d *Decoder) waveThreads() int {
@@ -18,22 +15,13 @@ func (d *Decoder) waveThreads() int {
 	return max(d.threads, 1)
 }
 
-// waveWorkers reports how many goroutines 7.3.8.1 may be spread over. The
-// wavefront path takes whole rows of one tile, so anything else — tiles, a
-// segment starting mid-row, a single row — stays on the serial loop.
 func (d *ctuDecoder) waveWorkers(sh *sliceHeader, starts []int, wpp bool) int {
 	w := int(d.s.picWidthInCtbs)
 
-	// 9.3.1 hands a row the state of the block above-right, which a picture one
-	// block wide does not have: every row initialises instead, and each one
-	// needs the whole row above reconstructed before it starts.
 	if !wpp || d.p.tilesEnabled || len(starts) < 2 || w < 2 {
 		return 1
 	}
 
-	// A dependent segment carries the contexts the previous one ended with,
-	// and persistent Rice adaptation carries a running state; neither is
-	// exercised by anything here, so both stay on the serial loop.
 	if d.p.dependentSliceSegmentsEnabled || d.s.persistentRiceAdaptation {
 		return 1
 	}
@@ -49,9 +37,6 @@ func (d *ctuDecoder) waveWorkers(sh *sliceHeader, starts []int, wpp bool) int {
 	return min(d.threads, len(starts))
 }
 
-// wave is the row progress a wavefront synchronises on. done[k] counts the
-// coding tree blocks of row k that are reconstructed, and ctx[k] is the
-// context state 9.3.1 hands to the row below, valid once done[k] reaches two.
 type wave struct {
 	mu   sync.Mutex
 	cond *sync.Cond
@@ -73,8 +58,6 @@ func newWave(rows, first int) *wave {
 	return v
 }
 
-// await blocks until row k has reconstructed n blocks, reporting false when
-// another row has already failed and there is nothing left to wait for.
 func (v *wave) await(k, n int) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -94,8 +77,6 @@ func (v *wave) advance(k, n int) {
 	v.cond.Broadcast()
 }
 
-// saveCtx publishes the state of 9.3.1 together with the progress that makes
-// it readable, so a waiting row never sees one without the other.
 func (v *wave) saveCtx(k int, state [nContexts]uint8, n int) {
 	v.mu.Lock()
 	v.ctx[k] = state
@@ -125,10 +106,6 @@ func (v *wave) failed() bool {
 	return v.bad
 }
 
-// decodeWavefront is 7.3.8.1 with the rows of the segment decoded at once.
-// Each row runs on its own copy of the block decoder: the tables indexed by
-// position are slices and stay shared, while the scratch and the arithmetic
-// decoder are values and come out per row.
 func (d *ctuDecoder) decodeWavefront(nal NALUnit, sh *sliceHeader, starts []int,
 	cur int32, workers int,
 ) error {
@@ -176,7 +153,6 @@ func (d *ctuDecoder) decodeWavefront(nal NALUnit, sh *sliceHeader, starts []int,
 	return nil
 }
 
-// decodeWaveRow decodes one coding tree block row of the segment.
 func (d *ctuDecoder) decodeWaveRow(nal NALUnit, sh *sliceHeader, starts []int, v *wave,
 	k, row int, cur int32,
 ) error {
@@ -187,8 +163,6 @@ func (d *ctuDecoder) decodeWaveRow(nal NALUnit, sh *sliceHeader, starts []int, v
 	}
 
 	if k > 0 {
-		// The row above has to reach its second block before this one can
-		// start, which is both the context handoff and the samples 6.4.1 needs.
 		if !v.await(k-1, 2) {
 			return nil
 		}
@@ -248,13 +222,8 @@ func (d *ctuDecoder) decodeWaveRow(nal NALUnit, sh *sliceHeader, starts []int, v
 	return nil
 }
 
-// minBandsPerWorker keeps a small picture serial, where handing out the work
-// costs more than doing it.
 const minBandsPerWorker = 16
 
-// overRows runs fn over row bands of [0, rows), on as many goroutines as the
-// picture is allowed. The loop filters use it: their passes are ordered against
-// each other but every band writes samples no other band touches.
 func (d *ctuDecoder) overRows(rows int, fn func(r0, r1 int)) {
 	n := min(d.threads, rows/minBandsPerWorker)
 	if n <= 1 {

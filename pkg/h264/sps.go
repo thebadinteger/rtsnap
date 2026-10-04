@@ -6,15 +6,12 @@ import (
 	"fmt"
 )
 
-// ExtendedSAR - Extended Sample Aspect Ratio Code
 const ExtendedSAR = 255
 
-// SPS errors
 var (
 	ErrNotSPS = errors.New("not an SPS NAL unit")
 )
 
-// SPS - AVC SPS parameters
 type SPS struct {
 	Profile                         uint32
 	ProfileCompatibility            uint32
@@ -51,10 +48,8 @@ type SPS struct {
 	VUI                             *VUIParameters
 }
 
-// ScalingList - 4x4 or 8x8 Scaling lists. Nil if not present
 type ScalingList []int
 
-// VUIParameters - extra parameters according to 14496-10, E.1
 type VUIParameters struct {
 	SampleAspectRatioWidth             uint
 	SampleAspectRatioHeight            uint
@@ -78,7 +73,7 @@ type VUIParameters struct {
 	NalHrdParameters                   *HrdParameters
 	VclHrdParametersPresentFlag        bool
 	VclHrdParameters                   *HrdParameters
-	LowDelayHrdFlag                    bool // Only present with HrdParameters
+	LowDelayHrdFlag                    bool
 	PicStructPresentFlag               bool
 	BitstreamRestrictionFlag           bool
 	MotionVectorsOverPicBoundariesFlag bool
@@ -90,7 +85,6 @@ type VUIParameters struct {
 	MaxDecFrameBuffering               uint
 }
 
-// HrdParameters inside VUI
 type HrdParameters struct {
 	CpbCountMinus1                     uint
 	BitRateScale                       uint
@@ -102,21 +96,18 @@ type HrdParameters struct {
 	TimeOffsetLength                   uint
 }
 
-// CpbEntry inside HrdParameters
 type CpbEntry struct {
 	BitRateValueMinus1 uint
 	CpbSizeValueMinus1 uint
 	CbrFlag            bool
 }
 
-// ParseSPSNALUnit - Parse AVC SPS NAL unit starting with NAL header
 func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) {
 
 	sps := &SPS{}
 
 	rd := bytes.NewReader(data)
 	reader := NewEBSPReader(rd)
-	// Note! First byte is NAL Header
 
 	nalHdr := reader.Read(8)
 	nalType := GetNaluType(byte(nalHdr))
@@ -128,13 +119,12 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 	sps.ProfileCompatibility = uint32(reader.Read(8))
 	sps.Level = uint32(reader.Read(8))
 	sps.ParameterID = uint32(reader.ReadExpGolomb())
-	sps.ChromaFormatIDC = 1 // Default value if no explicit value present
+	sps.ChromaFormatIDC = 1
 
 	if sps.Profile == 138 {
 		sps.ChromaFormatIDC = 0
 	}
 
-	// The following table is from 14496-10:2020 Section 7.3.2.1.1
 	switch sps.Profile {
 	case 100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135:
 		sps.ChromaFormatIDC = byte(reader.ReadExpGolomb())
@@ -158,15 +148,14 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 					sps.SeqScalingLists[i] = nil
 					continue
 				}
-				sizeOfScalingList := 16 // 4x4 for i < 6
+				sizeOfScalingList := 16
 				if i >= 6 {
-					sizeOfScalingList = 64 // 8x8 for i >= 6
+					sizeOfScalingList = 64
 				}
 				sps.SeqScalingLists[i] = readScalingList(reader, sizeOfScalingList)
 			}
 		}
 	default:
-		// Empty
 	}
 
 	sps.Log2MaxFrameNumMinus4 = reader.ReadExpGolomb()
@@ -204,7 +193,7 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 	var frameMbsOnly uint = 0
 	if sps.FrameMbsOnlyFlag {
 		frameMbsOnly = 1
-	} else { // Interlaced so the height should be doubled
+	} else {
 		sps.Height *= 2
 	}
 	if sps.FrameCroppingFlag {
@@ -215,7 +204,7 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 			cropUnitX, cropUnitY = 2, 2*(2-frameMbsOnly)
 		case 2:
 			cropUnitX, cropUnitY = 2, 1*(2-frameMbsOnly)
-		case 3: //This lacks one extra check?
+		case 3:
 			cropUnitX, cropUnitY = 1, 1*(2-frameMbsOnly)
 		default:
 			return nil, fmt.Errorf("non-vaild chroma_format_idc value: %d", sps.ChromaFormatIDC)
@@ -243,7 +232,6 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 	return sps, reader.AccError()
 }
 
-// CpbDbpDelaysPresent signals if Cpb and Dbp can be found in Picture Timing SEI
 func (s *SPS) CpbDpbDelaysPresent() bool {
 	if s.VUI == nil {
 		return false
@@ -252,7 +240,6 @@ func (s *SPS) CpbDpbDelaysPresent() bool {
 		s.VUI.VclHrdParametersPresentFlag)
 }
 
-// PicStructPresent signals if pic struct can be found in Picture Timing SEI
 func (s *SPS) PicStructPresent() bool {
 	if s.VUI == nil {
 		return false
@@ -260,7 +247,6 @@ func (s *SPS) PicStructPresent() bool {
 	return s.VUI.PicStructPresentFlag
 }
 
-// ChromaArrayType as defined in Section 7.4.2.1.1 under separate_colour_plane_flag
 func (s *SPS) ChromaArrayType() byte {
 	if !s.SeparateColourPlaneFlag {
 		return byte(s.ChromaFormatIDC)
@@ -268,8 +254,6 @@ func (s *SPS) ChromaArrayType() byte {
 	return 0
 }
 
-// parseVUI - parse VUI (Visual Usability Information)
-// if parseVUIBeyondAspectRatio is false, stop after AspectRatio has been parsed
 func parseVUI(reader *EBSPReader, parseVUIBeyondAspectRatio bool) *VUIParameters {
 	vui := &VUIParameters{}
 	var err error
@@ -361,18 +345,16 @@ func parseHrdParameters(r *EBSPReader) *HrdParameters {
 	return hp
 }
 
-// ConstraintFlags - return the four ConstraintFlag bits
 func (a *SPS) ConstraintFlags() byte {
 	return byte(a.ProfileCompatibility >> 4)
 }
 
-// GetSARfromIDC - get Sample Aspect Ratio from IDC index
 func GetSARfromIDC(index uint) (uint, uint, error) {
-	if index == 0 { // index 0 is unspecified in the standard. Return 1:1 as a reasonable default
+	if index == 0 {
 		return 1, 1, nil
 	}
 	if index > 16 {
-		return 0, 0, fmt.Errorf("SAR bad index %d", index) // 255 is custom and should be handled outside
+		return 0, 0, fmt.Errorf("SAR bad index %d", index)
 	}
 	aspectRatioTable := [][]uint{
 		{1, 1}, {12, 11}, {10, 11}, {16, 11},

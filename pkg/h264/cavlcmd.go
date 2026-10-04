@@ -2,8 +2,6 @@ package h264
 
 import "fmt"
 
-// DecodeCoeffToken reads a coeff_token VLC and returns (totalCoeff, trailingOnes).
-// nC selects the VLC table: 0-1, 2-3, 4-7, >=8, or -1 for chroma DC.
 func DecodeCoeffToken(br *BitReader, nC int) (totalCoeff, trailingOnes int, err error) {
 	if nC == -1 {
 		return decodeChromaDCCoeffToken(br)
@@ -65,7 +63,6 @@ func decodeChromaDCCoeffToken(br *BitReader) (totalCoeff, trailingOnes int, err 
 	return 0, 0, fmt.Errorf("no matching chroma DC coeff_token (peeked=0x%x)", peeked)
 }
 
-// DecodeLevelPrefix reads level_prefix: count of leading zeros followed by a 1.
 func DecodeLevelPrefix(br *BitReader) (int, error) {
 	zeros := 0
 	for {
@@ -83,7 +80,6 @@ func DecodeLevelPrefix(br *BitReader) (int, error) {
 	}
 }
 
-// DecodeTotalZeros reads total_zeros for a given totalCoeff and maxNumCoeff.
 func DecodeTotalZeros(br *BitReader, totalCoeff, maxNumCoeff int) (int, error) {
 	if maxNumCoeff == 4 {
 		return decodeChromaDCTotalZeros(br, totalCoeff)
@@ -97,7 +93,6 @@ func decodeTotalZeros4x4(br *BitReader, totalCoeff, maxNumCoeff int) (int, error
 		return 0, fmt.Errorf("total_zeros: invalid totalCoeff=%d", totalCoeff)
 	}
 
-	// Find max code length for this row
 	maxLen := 0
 	maxZeros := maxNumCoeff - totalCoeff
 	for tz := 0; tz <= maxZeros && tz < 16; tz++ {
@@ -162,7 +157,6 @@ func decodeChromaDCTotalZeros(br *BitReader, totalCoeff int) (int, error) {
 	return 0, fmt.Errorf("no matching chroma DC total_zeros (totalCoeff=%d, peeked=0x%x)", totalCoeff, peeked)
 }
 
-// DecodeRunBefore reads run_before for a given zerosLeft.
 func DecodeRunBefore(br *BitReader, zerosLeft int) (int, error) {
 	if zerosLeft <= 0 {
 		return 0, nil
@@ -170,7 +164,6 @@ func DecodeRunBefore(br *BitReader, zerosLeft int) (int, error) {
 
 	tableRow := min(zerosLeft-1, 6)
 
-	// Find max code length
 	maxLen := 0
 	for rb := 0; rb <= zerosLeft && rb < 16; rb++ {
 		if int(runBeforeLen[tableRow][rb]) > maxLen {
@@ -206,10 +199,6 @@ func DecodeRunBefore(br *BitReader, zerosLeft int) (int, error) {
 	return 0, fmt.Errorf("no matching run_before (zerosLeft=%d, peeked=0x%x)", zerosLeft, peeked)
 }
 
-// DecodeResidualBlock decodes a CAVLC residual block.
-// nC is the predicted non-zero coefficient count (or -1 for chroma DC).
-// maxNumCoeff is the maximum number of coefficients (4, 15, or 16).
-// Returns (coefficients in scan order, totalCoeff).
 func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, error) {
 	coeffs := make([]int32, maxNumCoeff)
 
@@ -222,10 +211,8 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		return coeffs, 0, nil
 	}
 
-	// Decode levels in reverse order (highest scan position first)
 	levels := make([]int32, totalCoeff)
 
-	// 1. Trailing ones sign flags (in reverse order)
 	for i := range trailingOnes {
 		sign, err := br.ReadBit()
 		if err != nil {
@@ -238,7 +225,6 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		}
 	}
 
-	// 2. Remaining coefficient levels
 	suffixLength := 0
 	if totalCoeff > 10 && trailingOnes < 3 {
 		suffixLength = 1
@@ -263,7 +249,6 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 			if err != nil {
 				return coeffs, 0, fmt.Errorf("level_suffix[%d]: %w", i, err)
 			}
-			// Spec 9.2.2: use Min(15, levelPrefix) for the shift
 			clampedPrefix := min(levelPrefix, 15)
 			levelCode = (clampedPrefix << uint(suffixLength)) + int(levelSuffix)
 		} else {
@@ -277,19 +262,16 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 			levelCode += (1 << uint(levelPrefix-3)) - 4096
 		}
 
-		// First coefficient after trailing ones gets +2 offset
 		if i == trailingOnes && trailingOnes < 3 {
 			levelCode += 2
 		}
 
-		// Convert level_code to signed level
 		if levelCode%2 == 0 {
 			levels[i] = int32(levelCode/2 + 1)
 		} else {
 			levels[i] = int32(-(levelCode + 1) / 2)
 		}
 
-		// Update suffix length
 		if suffixLength == 0 {
 			suffixLength = 1
 		}
@@ -302,7 +284,6 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		}
 	}
 
-	// 3. Decode total_zeros
 	zerosLeft := 0
 	if totalCoeff < maxNumCoeff {
 		zerosLeft, err = DecodeTotalZeros(br, totalCoeff, maxNumCoeff)
@@ -311,8 +292,6 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		}
 	}
 
-	// 4. Decode run_before and place coefficients at scan positions
-	// Coefficients are placed from highest scan position to lowest
 	coeffIdx := totalCoeff + zerosLeft - 1
 	for i := 0; i < totalCoeff-1; i++ {
 		runBefore := 0
@@ -328,7 +307,6 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		coeffIdx -= 1 + runBefore
 		zerosLeft -= runBefore
 	}
-	// Last coefficient
 	if coeffIdx >= 0 && coeffIdx < maxNumCoeff {
 		coeffs[coeffIdx] = levels[totalCoeff-1]
 	}

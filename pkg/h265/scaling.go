@@ -114,8 +114,6 @@ func parseScalingListData(c *getBits, sl *scalingList) error {
 	return nil
 }
 
-// factors is the ScalingFactor derivation of 7.4.5, replicating the eight by
-// eight lists across the larger transform sizes and overriding the DC term.
 func (sl *scalingList) factors() [maxScalingListSizes][maxScalingListMats][]uint8 {
 	var out [maxScalingListSizes][maxScalingListMats][]uint8
 

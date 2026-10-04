@@ -15,7 +15,6 @@ import (
 	"github.com/thebadinteger/rtsnap/pkg/rtsp"
 )
 
-// snapshot captures a single image from an rtsp stream
 func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image, error) {
 	o := Options{
 		Timeout: 10 * time.Second,
@@ -53,7 +52,7 @@ func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image,
 	if err := client.Play(ctx); err != nil {
 		return nil, err
 	}
-	defer client.Teardown(ctx)
+	defer func() { _ = client.Teardown(ctx) }()
 
 	switch client.Track.Codec {
 	case "mjpeg":
@@ -67,7 +66,6 @@ func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image,
 	}
 }
 
-// snapshotjpeg captures a frame and encodes it directly as jpeg bytes
 func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error) {
 	img, err := Snapshot(ctx, rtspURL, opts...)
 	if err != nil {
@@ -97,7 +95,6 @@ type StreamInfo struct {
 	Tracks []TrackInfo
 }
 
-// query inspects an rtsp stream and returns available media tracks
 func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error) {
 	o := Options{
 		Timeout: 10 * time.Second,
@@ -213,7 +210,7 @@ func captureH265(ctx context.Context, client *rtsp.Client) (image.Image, error) 
 	depack := rtp.NewH265Depacketizer()
 	var dec h265.Decoder
 
-	// feed initial vps, sps, pps from sdp if present
+	// feed initial vps sps pps from sdp if present
 	for _, vps := range client.Track.VPS {
 		if u, ok := h265.ParseNAL(vps); ok {
 			_, _ = dec.DecodeNAL(u)

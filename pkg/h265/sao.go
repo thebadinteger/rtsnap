@@ -13,7 +13,6 @@ type saoParams struct {
 	offset  [4]int32
 }
 
-// Table 8-16, the two sample positions each edge class compares against.
 var eoOffsets = [4][2][2]int{
 	{{-1, 0}, {1, 0}},
 	{{0, -1}, {0, 1}},
@@ -21,7 +20,6 @@ var eoOffsets = [4][2][2]int{
 	{{1, -1}, {-1, 1}},
 }
 
-// parseSAO reads 7.3.8.3 into the per-CTB parameters 8.7.3 applies.
 func (d *ctuDecoder) parseSAO(x, y int) {
 	w := int(d.s.picWidthInCtbs)
 	rs := (y>>d.s.ctbLog2SizeY)*w + x>>d.s.ctbLog2SizeY
@@ -101,7 +99,6 @@ func (d *ctuDecoder) parseSAO(x, y int) {
 			offAbs[i] = v
 		}
 
-		// 7.4.9.3 scales every offset by the shift the picture carries.
 		scale := d.p.log2SaoOffsetScaleLuma
 		if cIdx > 0 {
 			scale = d.p.log2SaoOffsetScaleChroma
@@ -121,8 +118,6 @@ func (d *ctuDecoder) parseSAO(x, y int) {
 			continue
 		}
 
-		// Edge offsets are signed by position: the first two are positive,
-		// the last two negative.
 		for i := range 4 {
 			p.offset[i] = int32(offAbs[i]) << scale
 			if i >= 2 {
@@ -138,8 +133,6 @@ func (d *ctuDecoder) parseSAO(x, y int) {
 	}
 }
 
-// grow returns a buffer of at least n elements, reusing b when it is big
-// enough. The loop filters run once per picture over the whole plane.
 func grow[T any](b []T, n int) []T {
 	if cap(b) < n {
 		return make([]T, n)
@@ -148,8 +141,6 @@ func grow[T any](b []T, n int) []T {
 	return b[:n]
 }
 
-// applySAO is 8.7.3. It reads the picture as deblocking left it, so the source
-// is copied first and every offset is taken from the unfiltered neighbourhood.
 func (d *ctuDecoder) applySAO() {
 	nComp := 1
 	if d.s.chromaArrayType() != 0 {
@@ -188,8 +179,6 @@ func saoPlane[P pixel](d *ctuDecoder, plane []P, stride, cIdx int, src []P) {
 
 	picW := int(d.s.picWidthInCtbs)
 
-	// 8.7.3 reads the picture as deblocking left it, so the rows that filter
-	// are copied first, with one row of margin for the classes reaching across.
 	lo, hi := len(d.sao), -1
 
 	for ctb := range d.sao {
@@ -209,8 +198,6 @@ func saoPlane[P pixel](d *ctuDecoder, plane []P, stride, cIdx int, src []P) {
 
 	copy(src[from:to], plane[from:to])
 
-	// Every block reads the copy and writes only its own samples, so the
-	// blocks spread over the workers once the copy is in place.
 	d.overRows(len(d.sao), func(c0, c1 int) {
 		for ctb := c0; ctb < c1; ctb++ {
 			if !d.saoEnabled(ctb, cIdx) {
@@ -240,8 +227,6 @@ func saoPlane[P pixel](d *ctuDecoder, plane []P, stride, cIdx int, src []P) {
 					xhi = min(min(x0+ctbW, w), w-max(a[0], b[0]))
 				}
 
-				// Only the first and last row and column of a coding tree block
-				// can reach across one, so the interior needs no availability test.
 				ilo, ihi := xlo, xhi
 
 				if !band {
@@ -261,7 +246,6 @@ func saoPlane[P pixel](d *ctuDecoder, plane []P, stride, cIdx int, src []P) {
 					saoSample(d, plane, src, stride, x, y, w, h, sw, sh, p, a, b, shift, maxV)
 				}
 
-				// The next sample whose transform block may differ.
 				next := func(x int) int {
 					return min((x*sw>>d.minTbLog2+1)<<d.minTbLog2/sw, ihi)
 				}
@@ -311,8 +295,6 @@ func (d *ctuDecoder) saoEnabled(ctb, cIdx int) bool {
 	return sl.saoChroma
 }
 
-// saoSample is 8.7.3 for one sample, for the block edges where a neighbour may
-// be across a tile or slice boundary the filter may not cross.
 func saoSample[P pixel](d *ctuDecoder, plane, src []P, stride, x, y, w, h, sw, sh int,
 	p *saoParams, a, b [2]int, shift int, maxV int32,
 ) {
@@ -352,7 +334,6 @@ func saoSample[P pixel](d *ctuDecoder, plane, src []P, stride, x, y, w, h, sw, s
 	}
 }
 
-// saoBandRow is the band offset of 8.7.3 over a run of samples.
 func saoBandRow[P pixel](dst, src []P, n, band int, offset *[4]int32, shift int, maxV int32) {
 	for i, s := range src[:n] {
 		v := int32(s)
@@ -363,8 +344,6 @@ func saoBandRow[P pixel](dst, src []P, n, band int, offset *[4]int32, shift int,
 	}
 }
 
-// saoEdgeRow is the edge offset of 8.7.3 over a run of samples, with the two
-// neighbours the class compares against passed as their own rows.
 func saoEdgeRow[P pixel](dst, src, na, nb []P, n int, offset *[4]int32, maxV int32) {
 	for i, s := range src[:n] {
 		v := int32(s)
@@ -383,9 +362,6 @@ func saoEdgeRow[P pixel](dst, src, na, nb []P, n int, offset *[4]int32, maxV int
 	}
 }
 
-// saoNeighbour is the availability part of 8.7.3: an edge offset sample is
-// left alone when the neighbour it compares against sits across a tile or
-// slice boundary that filtering may not cross.
 func (d *ctuDecoder) saoNeighbour(x, y int, off [2]int, sw, sh int) bool {
 	return d.filterEdge(x*sw, y*sh, (x+off[0])*sw, (y+off[1])*sh)
 }

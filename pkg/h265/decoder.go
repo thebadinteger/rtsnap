@@ -1,82 +1,6 @@
-/*
-package h265 decodes an HEVC (H.265) bitstream, and encodes an intra-only one.
 
-[Decoder.DecodeNAL] takes one NAL unit at a time and returns the pictures that
-are ready, which is not the same as the pictures it just decoded: a stream that
-codes out of display order is held back by sps_max_num_reorder_pics and released
-by picture order count. [Decoder.Flush] drains what is left at the end.
-
-	var d hevc.Decoder
-
-	for _, nal := range hevc.SplitAnnexB(data) {
-		pics, err := d.DecodeNAL(nal)
-		if err != nil {
-			return err
-		}
-
-		for _, p := range pics {
-			p.Release()
-		}
-	}
-
-[SplitAnnexB] frames a start-code delimited stream and [SplitHVCC] a
-length-prefixed one.
-
-# Pictures
-
-A [Picture] holds its planes as either 8-bit or 16-bit samples, in Y/Cb/Cr or
-Y16/Cb16/Cr16, chosen by the sequence rather than by the plane: both are 16-bit
-if either [Picture.BitDepth] or [Picture.BitDepthC] exceeds 8, which 7.4.3.2
-allows to differ. Width and Height stay as decoded because prediction reads the
-whole plane; CropX, CropY, CropW and CropH are what a caller should display.
-
-[Picture.Release] hands the planes back to the decoder to be reused by a later
-picture. It is optional, since a picture that is never released is collected
-like any other value, but it keeps a long sequence from allocating a fresh set
-of planes per frame. Reading the planes afterwards is a mistake; releasing twice
-is not.
-
-# Threading
-
-[Decoder.Threads] bounds the goroutines a picture may be spread over, across
-wavefront rows and the loop filter row bands. Zero means GOMAXPROCS and one
-decodes serially. A picture without entropy_coding_sync_enabled_flag, or one a
-single block wide, is serial whatever the bound.
-
-# Encoding
-
-[Encoder] writes self-contained intra IDR access units from 8-bit 4:2:0 frames
-whose dimensions are non-zero and even. A picture that does not fill the coding
-grid is padded to it and cropped back by a conformance window. Every frame is
-coded on its own, so [Encoder.Flush] never has anything left to return.
-
-	enc, err := hevc.NewEncoder(hevc.EncoderOptions{Width: 1920, Height: 1080, QP: 26})
-	if err != nil {
-		return err
-	}
-
-	nals, err := enc.Encode(hevc.Frame{Y: y, Cb: cb, Cr: cr, StrideY: ys, StrideC: cs})
-
-[MarshalAnnexB] frames the result for a file and [MarshalNAL] writes one unit
-for a length-prefixed container, whose configuration record repeats the
-[ProfileTierLevel] of the sequence parameter set.
-
-A picture is one slice of 64x64 coding tree blocks, coded as 32x32 units and as
-16x16 ones along an edge a 32x32 does not fit. Prediction searches all 35 intra
-modes and the 8x8 transform blocks choose between one transform and four.
-[EncoderOptions.Lossless] codes the samples as PCM instead and ignores QP.
-
-# Errors
-
-[ErrInvalid] means the bitstream is malformed. [ErrUnsupported] means it is
-valid and declares a coding tool this decoder does not implement, which is
-refused rather than decoded into a picture that merely looks plausible. Those
-tools are cross-component prediction, implicit and explicit RDPCM, and CABAC
-bypass alignment; everything else in the range extensions is applied.
-*/
 package h265
 
-// Decoder decodes a HEVC bitstream one NAL unit at a time.
 type Decoder struct {
 	vps map[uint8]*vps
 	sps map[uint32]*sps
@@ -95,9 +19,6 @@ type Decoder struct {
 	poc            pocState
 	curRPS         refPicSet
 
-	// 8.1.3: leading pictures associated with an intra random access point
-	// that starts decoding reference pictures that were never decoded, and
-	// are discarded rather than decoded.
 	seenPicture bool
 	skipRASL    bool
 
@@ -106,11 +27,6 @@ type Decoder struct {
 	maxDecPicBuf int
 }
 
-// DecodeNAL consumes one NAL unit and returns whatever pictures that completes,
-// in output order. Reordering means a picture may surface several NAL units
-// after the one that finished it.
-// FrameSizeLimit refuses a sequence whose pictures are larger than n samples,
-// with ErrUnsupported. Zero, the default, accepts anything the level allows.
 func (d *Decoder) FrameSizeLimit(n int) { d.frameSizeLimit = n }
 
 func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
@@ -177,8 +93,6 @@ func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
 	return d.decodeSlice(nal)
 }
 
-// Flush ends the sequence and returns every picture still held back for
-// reordering, in output order.
 func (d *Decoder) Flush() []*Picture {
 	out := d.finishPicture()
 
@@ -203,9 +117,6 @@ func (d *Decoder) Flush() []*Picture {
 	return out
 }
 
-// finishPicture runs the loop filters over the picture the decoder has been
-// filling, files it in the buffer and applies the additional bumping of
-// C.5.2.3.
 func (d *Decoder) finishPicture() []*Picture {
 	if d.cur == nil {
 		return nil
@@ -219,8 +130,6 @@ func (d *Decoder) finishPicture() []*Picture {
 
 	d.dpbStore(d.cur, d.curOut)
 
-	// ctu is the signal that a picture is in progress; ctuPrev keeps its
-	// buffers and its scan tables for the next one.
 	d.cur, d.ctu = nil, nil
 
 	return d.dpbDrain(false)
@@ -237,7 +146,6 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 		return nil, ErrInvalid
 	}
 
-	// 7.4.3.2.1 activates one pair of parameter sets for the whole picture.
 	if !first && d.ctu != nil {
 		if p.id != d.ctu.p.id {
 			return nil, ErrInvalid
@@ -282,8 +190,6 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 		d.maxLatency = int(s.maxLatencyIncrease)
 		d.maxDecPicBuf = int(s.maxDecPicBuffering) + 1
 
-		// 8.1.3 and 8.3.1: only a random access point that starts decoding
-		// restarts the count; one in mid-stream keeps it.
 		noRaslOutput := nal.Type.IsIRAP() && d.skipRASL
 
 		if noRaslOutput {
@@ -297,9 +203,6 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 		rps := deriveRefPicSet(poc, s.log2MaxPocLsb, &sh.stRPS, &sh.ltRPS, sh.ltRPS.numSps)
 		d.resolveLongTerm(&rps, s.log2MaxPocLsb)
 
-		// C.5.2.2: a random access point that starts decoding either discards
-		// the buffer or releases all of it, and a clean one always discards.
-		// Otherwise the reference picture set decides what stays.
 		switch {
 		case noRaslOutput && prior:
 			if !sh.noOutputOfPriorPics && nal.Type != NALCra {
@@ -341,8 +244,6 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 
 	d.ctu.sh = sh
 
-	// 7.4.7.1 signals the active reference counts and the list modification in
-	// every slice header, so the lists belong to the slice, not the picture.
 	d.buildRefLists(sh)
 
 	if err := d.ctu.decodeSliceData(nal, sh); err != nil {
@@ -375,8 +276,6 @@ func (d *Decoder) ppsForSlice(nal NALUnit) (*pps, bool, error) {
 	return p, first, nil
 }
 
-// decodeSliceData is 7.3.8.1. Tiles and wavefronts split the slice segment into
-// substreams that each restart the arithmetic decoder at an entry point.
 func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 	w := int(d.s.picWidthInCtbs)
 	total := w * int(d.s.picHeightInCtbs)
@@ -421,10 +320,6 @@ func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 		y := rs / w << d.s.ctbLog2SizeY
 
 		if wpp && rs%w == 0 {
-			// 9.3.1 syncs from the block above-right, but only when 6.4.1
-			// makes it available. A new slice starting on a row boundary has
-			// to initialise instead, and so does every row of a picture one
-			// block wide, which never has that neighbour at all.
 			top := rs - w + 1
 			availT := w >= 2 && rs >= w && top >= d.sliceAddrRs &&
 				d.tileID[d.rsToTs[rs]] == d.tileID[d.rsToTs[top]]
@@ -485,8 +380,6 @@ func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 	return nil
 }
 
-// substreamStarts converts the entry point offsets, which count bytes of the
-// NAL payload, into indices into the RBSP.
 func (d *ctuDecoder) substreamStarts(nal NALUnit, sh *sliceHeader) []int {
 	starts := make([]int, 0, len(sh.entryPointOffsets)+1)
 	starts = append(starts, sh.dataOffset)
@@ -500,9 +393,6 @@ func (d *ctuDecoder) substreamStarts(nal NALUnit, sh *sliceHeader) []int {
 	return starts
 }
 
-// startSubstream is 9.3.1. A dependent slice segment carries on with the
-// contexts the previous segment ended with, unless it opens a tile, which
-// always initialises them.
 func (d *ctuDecoder) startSubstream(nal NALUnit, sh *sliceHeader, starts []int, i int,
 	tileStart bool,
 ) error {
@@ -514,8 +404,6 @@ func (d *ctuDecoder) startSubstream(nal NALUnit, sh *sliceHeader, starts []int, 
 		return err
 	}
 
-	// 8.6.1 restarts qPY_PREV at a slice or a tile, so a dependent segment
-	// carrying on inside a tile keeps the quantisation parameter it inherited.
 	carry := i == 0 && sh.dependentSliceSegment && d.hasDepSaved && !tileStart
 
 	if i == 0 && !carry {
@@ -534,7 +422,6 @@ func (d *ctuDecoder) startSubstream(nal NALUnit, sh *sliceHeader, starts []int, 
 	return nil
 }
 
-// codingTreeUnit is 7.3.8.2.
 func (d *ctuDecoder) codingTreeUnit(x, y int) error {
 	if d.sh.saoLuma || d.sh.saoChroma {
 		d.parseSAO(x, y)
