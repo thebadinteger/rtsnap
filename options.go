@@ -32,6 +32,7 @@ type Options struct {
 	Codec     Codec
 	Transport Transport
 	Fast      bool
+	Transcode bool
 }
 
 type Option func(*Options)
@@ -62,6 +63,13 @@ func WithCodec(c Codec) Option {
 func WithFast() Option {
 	return func(o *Options) {
 		o.Fast = true
+	}
+}
+
+// force mjpeg decode and reencode
+func WithTranscode() Option {
+	return func(o *Options) {
+		o.Transcode = true
 	}
 }
 

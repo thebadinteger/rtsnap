@@ -121,7 +121,7 @@ Connects to the RTSP stream, issues `DESCRIBE`, `SETUP`, and `PLAY`, reads incom
 ```go
 func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error)
 ```
-Convenience helper that captures a frame and returns JPEG bytes. For `H.264`/`H.265` it decodes via `Snapshot` and re-encodes with the specified quality (`1` to `100`). For `MJPEG` it returns the original camera bytes directly without decode and re-encode, the `quality` argument is ignored  
+Convenience helper that captures a frame and returns JPEG bytes. For `H.264`/`H.265` it decodes via `Snapshot` and re-encodes with the specified quality (`1` to `100`). For `MJPEG` it returns the original camera bytes directly without decode and re-encode, the `quality` argument is ignored unless `WithTranscode` is set  
 #### `rtsnap.Query`
 ```go
 func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error)

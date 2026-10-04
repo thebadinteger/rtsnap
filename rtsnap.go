@@ -68,7 +68,7 @@ func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Opti
 	}
 	defer func() { _ = client.Teardown(ctx) }()
 
-	if client.Track.Codec == "mjpeg" {
+	if client.Track.Codec == "mjpeg" && !o.Transcode {
 		raw, err := captureMJPEGRaw(ctx, client)
 		if err == nil && len(raw) > 0 {
 			return raw, nil

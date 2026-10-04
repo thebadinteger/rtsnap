@@ -194,3 +194,36 @@ func TestMJPEGSnapshotJPEG(t *testing.T) {
 		t.Fatal("expected non-nil decoded image")
 	}
 }
+
+func TestMJPEGTranscode(t *testing.T) {
+	scanData, w, h := makeTestJPEGScanData()
+	pkts := makeMJPEGPackets(scanData, w, h, 2)
+
+	server, err := newMockServer(&mockServer{
+		codec:   "mjpeg",
+		packets: pkts,
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	jpegBytes, err := rtsnap.SnapshotJPEG(ctx, server.URL(), 10, rtsnap.WithTranscode())
+	if err != nil {
+		t.Fatalf("mjpeg transcode failed: %v", err)
+	}
+	if len(jpegBytes) == 0 {
+		t.Fatal("expected non-empty jpeg bytes")
+	}
+
+	img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
+	if err != nil {
+		t.Fatalf("decode transcoded jpeg failed: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil decoded image")
+	}
+}
