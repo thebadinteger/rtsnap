@@ -1,10 +1,10 @@
 # rtsnap  
 ### Go library for capturing snapshots from live RTSP streams  
 ![Go](https://img.shields.io/badge/Go-1.22%2B-00647d?style=flat&logo=go&logoColor=ffffff)
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/thebadinteger/rtsnap)](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
+[![License](https://img.shields.io/github/license/thebadinteger/rtsnap)](LICENSE)
 [![Test](https://github.com/thebadinteger/rtsnap/actions/workflows/test.yml/badge.svg)](https://github.com/thebadinteger/rtsnap/actions/workflows/test.yml)
 [![Lint](https://github.com/thebadinteger/rtsnap/actions/workflows/lint.yml/badge.svg)](https://github.com/thebadinteger/rtsnap/actions/workflows/lint.yml)
-[![License](https://img.shields.io/github/license/thebadinteger/rtsnap)](LICENSE)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/thebadinteger/rtsnap)](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
 
 ---
 
@@ -118,7 +118,7 @@ Connects to the RTSP stream, issues `DESCRIBE`, `SETUP`, and `PLAY`, reads incom
 ```go
 func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error)
 ```
-Convenience helper that captures a frame via `Snapshot` and encodes it directly into JPEG bytes with the specified quality (`1` to `100`)  
+Convenience helper that captures a frame and returns JPEG bytes. For `H.264`/`H.265` it decodes via `Snapshot` and re-encodes with the specified quality (`1` to `100`). For `MJPEG` it returns the original camera bytes directly without decode and re-encode, the `quality` argument is ignored  
 #### `rtsnap.Query`
 ```go
 func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error)
@@ -128,6 +128,7 @@ Connects to the RTSP stream and queries available video tracks (codec, payload t
 - `WithAuth(username, password string)`: Sets credentials for HTTP Basic or Digest authentication
 - `WithTimeout(d time.Duration)`: Sets a client-side timeout that bounds the total operation duration
 - `WithCodec(c Codec)`: Selects a preferred video codec (`rtsnap.CodecH264`, `rtsnap.CodecH265`, `rtsnap.CodecMJPEG`, or `rtsnap.CodecAuto`). By default, `CodecAuto` selects the highest priority available codec (`H.264` > `H.265` > `MJPEG`)
+- `WithFast()`: Skips loop filters (`H.264` deblocking, `H.265` deblocking and SAO) for faster decoding with negligible quality loss on single snapshots
 
 ## Codecs
 
@@ -163,8 +164,7 @@ rtsnap/
 ```
 
 ## Documentation
-Full documentation, subpackage APIs, and architectural details are in [DOCUMENTATION.md](DOCUMENTATION.md)  
-API reference documentation is also hosted on [pkg.go.dev](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
+[Open documentation](https://pkg.go.dev/github.com/thebadinteger/rtsnap)
 
 ## License  
 Made by [badinteger](https://github.com/thebadinteger) `[MIT License]`  

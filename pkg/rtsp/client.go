@@ -70,7 +70,7 @@ func Dial(ctx context.Context, rtspURL string, user, pass string) (*Client, erro
 
 	return &Client{
 		conn:       conn,
-		reader:     bufio.NewReader(conn),
+		reader:     bufio.NewReaderSize(conn, 64*1024),
 		rawURL:     rtspURL,
 		cleanURL:   cleanURL,
 		user:       user,

@@ -420,6 +420,7 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 
 	err = reconstructFrame(sc, f, sps, pps)
 	if err != nil {
+		putMBs(sc.MBs)
 		return nil, fmt.Errorf("reconstruct frame: %w", err)
 	}
 
@@ -428,11 +429,22 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 			int(sh.SliceAlphaC0OffsetDiv2)*2,
 			int(sh.SliceBetaOffsetDiv2)*2)
 	}
+	putMBs(sc.MBs)
 
 	return f, nil
 }
 
 func removeEBSPPrevention(data []byte) []byte {
+	found := false
+	for i := 0; i+2 < len(data); i++ {
+		if data[i] == 0 && data[i+1] == 0 && data[i+2] == 3 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return data
+	}
 	result := make([]byte, 0, len(data))
 	i := 0
 	for i < len(data) {
@@ -878,6 +890,12 @@ var zigzag8x8 = [64]int{
 	53, 60, 61, 54, 47, 55, 62, 63,
 }
 
+var qpcTable = [22]int{
+	29, 30, 31, 32, 32, 33, 34, 34,
+	35, 35, 36, 36, 37, 37, 37, 38,
+	38, 38, 39, 39, 39, 39,
+}
+
 func chromaQP(qpY int) int {
 	if qpY < 0 {
 		qpY = 0
@@ -887,11 +905,6 @@ func chromaQP(qpY int) int {
 	}
 	if qpY > 51 {
 		return 51
-	}
-	qpcTable := []int{
-		29, 30, 31, 32, 32, 33, 34, 34,
-		35, 35, 36, 36, 37, 37, 37, 38,
-		38, 38, 39, 39, 39, 39,
 	}
 	return qpcTable[qpY-30]
 }

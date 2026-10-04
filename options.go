@@ -16,6 +16,7 @@ type Options struct {
 	Password string
 	Timeout  time.Duration
 	Codec    Codec
+	Fast     bool
 }
 
 type Option func(*Options)
@@ -36,5 +37,11 @@ func WithTimeout(d time.Duration) Option {
 func WithCodec(c Codec) Option {
 	return func(o *Options) {
 		o.Codec = c
+	}
+}
+
+func WithFast() Option {
+	return func(o *Options) {
+		o.Fast = true
 	}
 }

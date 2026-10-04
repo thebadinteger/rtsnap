@@ -2,7 +2,28 @@ package h264
 
 import (
 	"fmt"
+	"sync"
 )
+
+var mbPool sync.Pool
+
+func getMBs(count int) []MBData {
+	if v := mbPool.Get(); v != nil {
+		buf := v.([]MBData)
+		if cap(buf) >= count {
+			buf = buf[:count]
+			clear(buf)
+			return buf
+		}
+	}
+	return make([]MBData, count)
+}
+
+func putMBs(buf []MBData) {
+	if cap(buf) > 0 {
+		mbPool.Put(buf[:0])
+	}
+}
 
 func DecodeSliceData(sliceData []byte, sliceQPY int, mbWidth, mbHeight int,
 	transform8x8ModeFlag bool, chromaArrayType int,
@@ -24,7 +45,7 @@ func DecodeSliceData(sliceData []byte, sliceQPY int, mbWidth, mbHeight int,
 		MBHeight:             mbHeight,
 		TotalMBs:             totalMBs,
 		QPY:                  sliceQPY,
-		MBs:                  make([]MBData, totalMBs),
+		MBs:                  getMBs(totalMBs),
 		Transform8x8ModeFlag: transform8x8ModeFlag,
 		ChromaArrayType:      chromaArrayType,
 		BitDepthY:            bitDepthY,
@@ -216,7 +237,6 @@ func decodeResidualMB(sc *SliceContext, mbIdx int) {
 }
 
 func decodeIPCM(sc *SliceContext, mbIdx int) error {
-	fmt.Printf("WARNING: Skipping I_PCM macroblock at index %d\n", mbIdx)
 	return nil
 }
 
@@ -233,7 +253,7 @@ func DecodeSliceDataCAVLC(br *BitReader, sliceQPY int, mbWidth, mbHeight int,
 		MBHeight:             mbHeight,
 		TotalMBs:             totalMBs,
 		QPY:                  sliceQPY,
-		MBs:                  make([]MBData, totalMBs),
+		MBs:                  getMBs(totalMBs),
 		Transform8x8ModeFlag: transform8x8ModeFlag,
 		ChromaArrayType:      chromaArrayType,
 		BitDepthY:            bitDepthY,
@@ -480,7 +500,6 @@ func decodeResidualMBCAVLC(sc *SliceContext, mbIdx int) error {
 }
 
 func decodeIPCMCAVLC(sc *SliceContext, mbIdx int) error {
-	fmt.Printf("WARNING: Skipping I_PCM macroblock at index %d\n", mbIdx)
 	return nil
 }
 

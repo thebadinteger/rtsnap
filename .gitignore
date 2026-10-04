@@ -4,6 +4,7 @@
 *.dylib
 *.test
 *.out
+*.pprof
 *.png
 *.jpg
 *.jpeg

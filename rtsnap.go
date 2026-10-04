@@ -58,16 +58,71 @@ func Snapshot(ctx context.Context, rtspURL string, opts ...Option) (image.Image,
 	case "mjpeg":
 		return captureMJPEG(ctx, client)
 	case "h264":
-		return captureH264(ctx, client)
+		return captureH264(ctx, client, o.Fast)
 	case "h265":
-		return captureH265(ctx, client)
+		return captureH265(ctx, client, o.Fast)
 	default:
 		return nil, fmt.Errorf("unsupported video codec: %s", client.Track.Codec)
 	}
 }
 
 func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error) {
-	img, err := Snapshot(ctx, rtspURL, opts...)
+	o := Options{
+		Timeout: 10 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	if o.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
+		defer cancel()
+	}
+
+	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	if err := client.Describe(ctx); err != nil {
+		return nil, err
+	}
+
+	track, err := client.SelectTrack(string(o.Codec))
+	if err != nil {
+		return nil, err
+	}
+	client.Track = track
+
+	if err := client.Setup(ctx); err != nil {
+		return nil, err
+	}
+
+	if err := client.Play(ctx); err != nil {
+		return nil, err
+	}
+	defer func() { _ = client.Teardown(ctx) }()
+
+	if client.Track.Codec == "mjpeg" {
+		raw, err := captureMJPEGRaw(ctx, client)
+		if err == nil && len(raw) > 0 {
+			return raw, nil
+		}
+	}
+
+	var img image.Image
+	switch client.Track.Codec {
+	case "mjpeg":
+		img, err = captureMJPEG(ctx, client)
+	case "h264":
+		img, err = captureH264(ctx, client, o.Fast)
+	case "h265":
+		img, err = captureH265(ctx, client, o.Fast)
+	default:
+		return nil, fmt.Errorf("unsupported video codec: %s", client.Track.Codec)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -162,11 +217,39 @@ func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error)
 	}
 }
 
-func captureH264(ctx context.Context, client *rtsp.Client) (image.Image, error) {
+func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
+	depack := rtp.NewMJPEGDepacketizer()
+
+	for {
+		frame, err := client.ReadFrame(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if frame.Channel != client.RTPChannel() {
+			continue
+		}
+
+		var pkt rtp.Packet
+		if err := pkt.Unmarshal(frame.Payload); err != nil {
+			continue
+		}
+
+		raw, err := depack.Decode(&pkt)
+		if err != nil {
+			continue
+		}
+		if len(raw) > 0 {
+			out := make([]byte, len(raw))
+			copy(out, raw)
+			return out, nil
+		}
+	}
+}
+
+func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Image, error) {
 	depack := rtp.NewH264Depacketizer()
 	dec := h264.New()
-
-	// feed initial sps and pps from sdp if present
+	dec.SkipDeblock = fast
 	if len(client.Track.SPS) > 0 {
 		_, _ = dec.DecodeNALUs(client.Track.SPS)
 	}
@@ -206,11 +289,10 @@ func captureH264(ctx context.Context, client *rtsp.Client) (image.Image, error) 
 	}
 }
 
-func captureH265(ctx context.Context, client *rtsp.Client) (image.Image, error) {
+func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Image, error) {
 	depack := rtp.NewH265Depacketizer()
 	var dec h265.Decoder
-
-	// feed initial vps sps pps from sdp if present
+	dec.SkipLoop = fast
 	for _, vps := range client.Track.VPS {
 		if u, ok := h265.ParseNAL(vps); ok {
 			_, _ = dec.DecodeNAL(u)

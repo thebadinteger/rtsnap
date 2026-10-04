@@ -2,6 +2,7 @@
 package h265
 
 type Decoder struct {
+	SkipLoop bool
 	vps map[uint8]*vps
 	sps map[uint32]*sps
 	pps map[uint32]*pps
@@ -124,8 +125,10 @@ func (d *Decoder) finishPicture() []*Picture {
 
 	if d.ctu != nil {
 		d.ctu.storeColMotion()
-		d.ctu.deblock()
-		d.ctu.applySAO()
+		if !d.SkipLoop {
+			d.ctu.deblock()
+			d.ctu.applySAO()
+		}
 	}
 
 	d.dpbStore(d.cur, d.curOut)
