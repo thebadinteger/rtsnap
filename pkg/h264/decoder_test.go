@@ -6,7 +6,7 @@ import (
 )
 
 func TestDecodeBlackIDR(t *testing.T) {
-	data, err := os.ReadFile("../../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("../../tests/testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -33,7 +33,7 @@ func TestDecodeBlackIDR(t *testing.T) {
 }
 
 func TestDecodeTestpicIDR(t *testing.T) {
-	data, err := os.ReadFile("../../src/hi264/testdata/testpic_idr.264")
+	data, err := os.ReadFile("../../tests/testdata/testpic_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}

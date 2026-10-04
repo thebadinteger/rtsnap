@@ -13,7 +13,7 @@ import (
 )
 
 func TestAuthInvalidCredentials(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -44,7 +44,7 @@ func TestAuthInvalidCredentials(t *testing.T) {
 }
 
 func TestAuthDigestSHA256(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -75,7 +75,7 @@ func TestAuthDigestSHA256(t *testing.T) {
 }
 
 func TestAuthURLCredentials(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}

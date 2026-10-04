@@ -30,7 +30,7 @@ func makeRTPPacketsH264(nalus [][]byte) [][]byte {
 }
 
 func TestH264Snapshot(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -58,7 +58,7 @@ func TestH264Snapshot(t *testing.T) {
 }
 
 func TestH264SnapshotBasicAuth(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -89,7 +89,7 @@ func TestH264SnapshotBasicAuth(t *testing.T) {
 }
 
 func TestH264SnapshotDigestAuth(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -120,7 +120,7 @@ func TestH264SnapshotDigestAuth(t *testing.T) {
 }
 
 func TestH264SnapshotFUA(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -178,7 +178,7 @@ func TestH264SnapshotFUA(t *testing.T) {
 }
 
 func TestH264SnapshotSTAPA(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -222,7 +222,7 @@ func TestH264SnapshotSTAPA(t *testing.T) {
 }
 
 func TestH264SnapshotJPEG(t *testing.T) {
-	data, err := os.ReadFile("../src/hi264/testdata/black_idr.264")
+	data, err := os.ReadFile("testdata/black_idr.264")
 	if err != nil {
 		t.Skip("testdata not found")
 	}

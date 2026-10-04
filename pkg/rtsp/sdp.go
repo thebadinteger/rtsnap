@@ -34,6 +34,31 @@ func parseFmtp(params string) map[string]string {
 	return res
 }
 
+func decodeParam(p string) ([]byte, bool) {
+	clean := strings.ReplaceAll(strings.ReplaceAll(p, " ", ""), "\t", "")
+	if data, err := base64.StdEncoding.DecodeString(clean); err == nil && len(data) > 0 {
+		return data, true
+	}
+	if data, err := base64.RawStdEncoding.DecodeString(clean); err == nil && len(data) > 0 {
+		return data, true
+	}
+	return nil, false
+}
+
+func splitSDPLines(sdp []byte) []string {
+	text := strings.ReplaceAll(string(sdp), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		if (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) && len(lines) > 0 {
+			lines[len(lines)-1] += strings.TrimLeft(line, " \t")
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func resolveURL(base, ref string) string {
 	if ref == "*" || ref == "" {
 		return base
@@ -57,13 +82,12 @@ type sdpSection struct {
 }
 
 func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
-	lines := strings.Split(string(sdp), "\n")
+	lines := splitSDPLines(sdp)
 	var sections []sdpSection
 	var curSection *sdpSection
 	globalControl := ""
 
 	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
 		if len(line) < 2 || line[1] != '=' {
 			continue
 		}
@@ -73,7 +97,7 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 		switch prefix {
 		case 'm':
 			parts := strings.Fields(val)
-			if len(parts) > 0 && parts[0] == "video" {
+			if len(parts) > 0 && strings.EqualFold(parts[0], "video") {
 				sec := sdpSection{
 					rtpmap: make(map[uint8]string),
 					fmtp:   make(map[uint8]map[string]string),
@@ -89,19 +113,19 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 				curSection = nil
 			}
 		case 'a':
-			if curSection == nil {
-				if strings.HasPrefix(val, "control:") {
-					globalControl = strings.TrimPrefix(val, "control:")
-				}
-				continue
-			}
-
 			colon := strings.IndexByte(val, ':')
 			if colon == -1 {
 				continue
 			}
-			attrName := val[:colon]
+			attrName := strings.ToLower(val[:colon])
 			attrVal := val[colon+1:]
+
+			if curSection == nil {
+				if attrName == "control" {
+					globalControl = attrVal
+				}
+				continue
+			}
 
 			switch attrName {
 			case "control":
@@ -156,6 +180,14 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 				}
 			} else if pt == 26 {
 				codec = "mjpeg"
+			} else if fm := sec.fmtp[pt]; fm != nil {
+				if _, ok := fm["sprop-parameter-sets"]; ok {
+					codec = "h264"
+				} else if _, ok := fm["sprop-sps"]; ok {
+					codec = "h265"
+				} else if _, ok := fm["sprop-vps"]; ok {
+					codec = "h265"
+				}
 			}
 
 			if codec == "" {
@@ -175,8 +207,7 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 			if codec == "h264" && track.Fmtp != nil {
 				if spsStr, ok := track.Fmtp["sprop-parameter-sets"]; ok {
 					for _, p := range strings.Split(spsStr, ",") {
-						data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(p))
-						if err == nil && len(data) > 0 {
+						if data, ok := decodeParam(strings.TrimSpace(p)); ok {
 							naluType := data[0] & 0x1F
 							if naluType == 7 {
 								track.SPS = append(track.SPS, data)
@@ -192,8 +223,7 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 				for _, key := range []string{"sprop-vps", "sprop-sps", "sprop-pps"} {
 					if val, ok := track.Fmtp[key]; ok {
 						for _, p := range strings.Split(val, ",") {
-							data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(p))
-							if err == nil && len(data) > 0 {
+							if data, ok := decodeParam(strings.TrimSpace(p)); ok {
 								switch key {
 								case "sprop-vps":
 									track.VPS = append(track.VPS, data)

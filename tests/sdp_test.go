@@ -143,3 +143,99 @@ a=control:trackH265
 		t.Fatal("expected error for non-existent codec, got nil")
 	}
 }
+
+func TestSDPQuirkyFoldedFmtp(t *testing.T) {
+	sdp := []byte(`v=0
+o=- 1 1 IN IP4 127.0.0.1
+s=Quirky Camera
+m=video 0 RTP/AVP 96
+a=RTPMAP:96 H264/90000
+a=FMTP:96 packetization-mode=1; sprop-parameter-sets=Z2QAHqyyAWhf8uAiAAAD
+ AAIAAAMAZB4sXJA=,aOvMsiw=
+a=Control:track1
+`)
+
+	tracks, err := rtsp.ParseSDP(sdp, "rtsp://127.0.0.1:554/live")
+	if err != nil {
+		t.Fatalf("parse sdp: %v", err)
+	}
+	if len(tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(tracks))
+	}
+	track := tracks[0]
+	if track.Codec != "h264" {
+		t.Errorf("expected h264, got %s", track.Codec)
+	}
+	if len(track.SPS) != 1 {
+		t.Errorf("expected 1 sps from folded line, got %d", len(track.SPS))
+	}
+	if len(track.PPS) != 1 {
+		t.Errorf("expected 1 pps from folded line, got %d", len(track.PPS))
+	}
+	if track.Control != "rtsp://127.0.0.1:554/track1" {
+		t.Errorf("unexpected control: %s", track.Control)
+	}
+}
+
+func TestSDPMissingRtpmap(t *testing.T) {
+	sdp := []byte(`v=0
+m=video 0 RTP/AVP 96
+a=fmtp:96 packetization-mode=1; sprop-parameter-sets=Z2QAHqyyAWhf8uAiAAADAAIAAAMAZB4sXJA=,aOvMsiw=
+a=control:track0
+`)
+
+	tracks, err := rtsp.ParseSDP(sdp, "rtsp://127.0.0.1/live")
+	if err != nil {
+		t.Fatalf("parse sdp: %v", err)
+	}
+	if len(tracks) != 1 || tracks[0].Codec != "h264" {
+		t.Fatalf("expected h264 fallback from fmtp, got %v", tracks)
+	}
+
+	sdp265 := []byte(`v=0
+m=video 0 RTP/AVP 96
+a=fmtp:96 sprop-sps=QgEBAWAAAAMAsAAAAwAAAwB7jAk=;sprop-pps=RAHBcrA=
+a=control:track0
+`)
+
+	tracks265, err := rtsp.ParseSDP(sdp265, "rtsp://127.0.0.1/live")
+	if err != nil {
+		t.Fatalf("parse sdp265: %v", err)
+	}
+	if len(tracks265) != 1 || tracks265[0].Codec != "h265" {
+		t.Fatalf("expected h265 fallback from fmtp, got %v", tracks265)
+	}
+}
+
+func TestSDPCROnlyEndings(t *testing.T) {
+	sdp := []byte("v=0\ro=- 1 1 IN IP4 127.0.0.1\rm=video 0 RTP/AVP 96\ra=rtpmap:96 H264/90000\ra=control:track0\r")
+
+	tracks, err := rtsp.ParseSDP(sdp, "rtsp://127.0.0.1/live")
+	if err != nil {
+		t.Fatalf("parse sdp: %v", err)
+	}
+	if len(tracks) != 1 || tracks[0].Codec != "h264" {
+		t.Fatalf("expected h264 track, got %v", tracks)
+	}
+}
+
+func TestSDPUnpaddedBase64(t *testing.T) {
+	sdp := []byte(`v=0
+m=video 0 RTP/AVP 96
+a=rtpmap:96 H264/90000
+a=fmtp:96 sprop-parameter-sets=Z2QAHqyyAWhf8uAiAAADAAIAAAMAZB4sXJA,aOvMsiw
+a=control:track0
+`)
+
+	tracks, err := rtsp.ParseSDP(sdp, "rtsp://127.0.0.1/live")
+	if err != nil {
+		t.Fatalf("parse sdp: %v", err)
+	}
+	if len(tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(tracks))
+	}
+	if len(tracks[0].SPS) != 1 || len(tracks[0].PPS) != 1 {
+		t.Errorf("expected sps+pps from unpadded base64, got sps=%d pps=%d",
+			len(tracks[0].SPS), len(tracks[0].PPS))
+	}
+}

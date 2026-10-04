@@ -89,15 +89,10 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 		_ = c.conn.SetDeadline(d)
 	}
 
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = c.conn.SetDeadline(time.Now())
-		case <-stop:
-		}
-	}()
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.conn.SetDeadline(time.Now())
+	})
+	defer stop()
 
 	if req.Headers == nil {
 		req.Headers = make(map[string]string)
@@ -243,15 +238,10 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 		_ = c.conn.SetReadDeadline(d)
 	}
 
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = c.conn.SetReadDeadline(time.Now())
-		case <-stop:
-		}
-	}()
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.conn.SetReadDeadline(time.Now())
+	})
+	defer stop()
 
 	for {
 		select {

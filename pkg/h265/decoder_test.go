@@ -6,7 +6,7 @@ import (
 )
 
 func TestDecodeTinyIntra(t *testing.T) {
-	data, err := os.ReadFile("../../src/h265/hevc/testdata/tiny_intra.h265")
+	data, err := os.ReadFile("../../tests/testdata/tiny_intra.h265")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
@@ -45,7 +45,7 @@ func TestDecodeTinyIntra(t *testing.T) {
 }
 
 func TestDecode1080p(t *testing.T) {
-	data, err := os.ReadFile("../../src/h265/hevc/testdata/1080p.h265")
+	data, err := os.ReadFile("../../tests/testdata/1080p.h265")
 	if err != nil {
 		t.Skip("testdata not found")
 	}
