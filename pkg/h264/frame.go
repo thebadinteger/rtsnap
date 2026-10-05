@@ -2,16 +2,6 @@ package h264
 
 import "image"
 
-func clipUint8(v int) uint8 {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return uint8(v)
-}
-
 type Frame struct {
 	Width    int
 	Height   int
@@ -57,14 +47,6 @@ func (f *Frame) GetLumaPixel(x, y int) uint8 {
 	return f.Y[y*f.StrideY+x]
 }
 
-func (f *Frame) SetChromaPixel(comp int, x, y int, val uint8) {
-	if comp == 0 {
-		f.Cb[y*f.StrideC+x] = val
-	} else {
-		f.Cr[y*f.StrideC+x] = val
-	}
-}
-
 func (f *Frame) GetChromaPixel(comp int, x, y int) uint8 {
 	if comp == 0 {
 		return f.Cb[y*f.StrideC+x]
@@ -96,30 +78,6 @@ func (f *Frame) SetChroma8x8(comp int, mbX, mbY int, block [8][8]uint8) {
 	}
 }
 
-func (f *Frame) YUV420Bytes() []byte {
-	lumaSize := f.Width * f.Height
-	chromaSize := (f.Width / 2) * (f.Height / 2)
-	result := make([]byte, lumaSize+2*chromaSize)
-
-	for y := 0; y < f.Height; y++ {
-		copy(result[y*f.Width:], f.Y[y*f.StrideY:y*f.StrideY+f.Width])
-	}
-
-	chromaW := f.Width / 2
-	chromaH := f.Height / 2
-	offset := lumaSize
-	for y := range chromaH {
-		copy(result[offset+y*chromaW:], f.Cb[y*f.StrideC:y*f.StrideC+chromaW])
-	}
-
-	offset = lumaSize + chromaSize
-	for y := range chromaH {
-		copy(result[offset+y*chromaW:], f.Cr[y*f.StrideC:y*f.StrideC+chromaW])
-	}
-
-	return result
-}
-
 // expose frame as standard image
 func (f *Frame) Image() image.Image {
 	return f.YCbCr()
@@ -137,29 +95,4 @@ func (f *Frame) YCbCr() *image.YCbCr {
 	}
 }
 
-func (f *Frame) NRGBA() *image.NRGBA {
-	img := image.NewNRGBA(image.Rect(0, 0, f.Width, f.Height))
-	for y := 0; y < f.Height; y++ {
-		cy := y / 2
-		for x := 0; x < f.Width; x++ {
-			cx := x / 2
-			yVal := int(f.Y[y*f.StrideY+x])
-			cb := int(f.Cb[cy*f.StrideC+cx])
-			cr := int(f.Cr[cy*f.StrideC+cx])
 
-			c := yVal - 16
-			d := cb - 128
-			e := cr - 128
-			r := (298*c + 409*e + 128) >> 8
-			g := (298*c - 100*d - 208*e + 128) >> 8
-			b := (298*c + 516*d + 128) >> 8
-
-			off := y*img.Stride + x*4
-			img.Pix[off+0] = clipUint8(r)
-			img.Pix[off+1] = clipUint8(g)
-			img.Pix[off+2] = clipUint8(b)
-			img.Pix[off+3] = 255
-		}
-	}
-	return img
-}

@@ -158,13 +158,3 @@ func InverseTransform8x8(coeffs [64]int32) [64]int32 {
 
 	return result
 }
-
-func Clip(val, max int32) int32 {
-	if val < 0 {
-		return 0
-	}
-	if val > max {
-		return max
-	}
-	return val
-}

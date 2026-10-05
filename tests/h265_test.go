@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/thebadinteger/rtsnap"
+	"github.com/thebadinteger/rtsnap/pkg/h265"
 )
 
 func makeRTPPacketsH265(rawNALs [][]byte) [][]byte {
@@ -174,5 +175,82 @@ func TestH265SnapshotJPEG(t *testing.T) {
 	}
 	if img == nil {
 		t.Fatal("expected non-nil decoded image")
+	}
+}
+
+func TestH265GapKeepsParamSets(t *testing.T) {
+	data, err := os.ReadFile("testdata/tiny_intra.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	rawNALs := splitAnnexBNALBytes(data)
+	vpsIdx, spsIdx, ppsIdx, irapIdx := -1, -1, -1, -1
+	for i, raw := range rawNALs {
+		u, ok := h265.ParseNAL(raw)
+		if !ok {
+			continue
+		}
+		switch u.Type {
+		case h265.NALVPS:
+			if vpsIdx < 0 {
+				vpsIdx = i
+			}
+		case h265.NALSPS:
+			if spsIdx < 0 {
+				spsIdx = i
+			}
+		case h265.NALPPS:
+			if ppsIdx < 0 {
+				ppsIdx = i
+			}
+		default:
+			if u.Type.IsIRAP() && irapIdx < 0 {
+				irapIdx = i
+			}
+		}
+	}
+	if vpsIdx < 0 || spsIdx < 0 || ppsIdx < 0 || irapIdx < 0 {
+		t.Fatal("fixture lacks vps/sps/pps/irap units")
+	}
+	if vpsIdx > irapIdx || spsIdx > irapIdx || ppsIdx > irapIdx {
+		t.Fatal("param sets must precede first irap unit")
+	}
+
+	mk := func(seq byte, mark bool, payload []byte) []byte {
+		hdr := []byte{0x80, 0x60, 0x00, seq, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
+		if mark {
+			hdr[1] |= 0x80
+		}
+		return append(hdr, payload...)
+	}
+	var pkts [][]byte
+	seq := byte(1)
+	for i, raw := range rawNALs {
+		if i == 3 {
+			seq++
+		}
+		pkts = append(pkts, mk(seq, i == len(rawNALs)-1, raw))
+		seq++
+	}
+
+	server, err := newMockServer(&mockServer{
+		codec:   "h265",
+		packets: pkts,
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, server.URL())
+	if err != nil {
+		t.Fatalf("snapshot after gap failed: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil image")
 	}
 }

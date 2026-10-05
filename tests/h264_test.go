@@ -142,7 +142,8 @@ func TestH264SnapshotFUA(t *testing.T) {
 		(idrHeader & 0x60) | 28,
 		0x80 | (idrHeader & 0x1f),
 	}
-	rtpHdr1 := []byte{0x80, 0x60, 0x00, 0x10, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
+	seq1 := byte(len(nalus))
+	rtpHdr1 := []byte{0x80, 0x60, 0x00, seq1, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
 	pkt1 := append(rtpHdr1, fuaHdr1...)
 	pkt1 = append(pkt1, idrPayload[:half]...)
 	pkts = append(pkts, pkt1)
@@ -151,7 +152,8 @@ func TestH264SnapshotFUA(t *testing.T) {
 		(idrHeader & 0x60) | 28,
 		0x40 | (idrHeader & 0x1f),
 	}
-	rtpHdr2 := []byte{0x80, 0xe0, 0x00, 0x11, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44} // marker bit
+	seq2 := byte(len(nalus) + 1)
+	rtpHdr2 := []byte{0x80, 0xe0, 0x00, seq2, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44} // marker bit
 	pkt2 := append(rtpHdr2, fuaHdr2...)
 	pkt2 = append(pkt2, idrPayload[half:]...)
 	pkts = append(pkts, pkt2)
@@ -215,6 +217,106 @@ func TestH264SnapshotSTAPA(t *testing.T) {
 	img, err := rtsnap.Snapshot(ctx, server.URL())
 	if err != nil {
 		t.Fatalf("snapshot with stap-a failed: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil image")
+	}
+}
+
+func TestH264GapKeepsParamSets(t *testing.T) {
+	data, err := os.ReadFile("testdata/black_idr.264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	var sps, pps, idr []byte
+	for _, nalu := range h264.ExtractNalusFromByteStream(data) {
+		switch h264.NaluType(nalu[0] & 0x1f) {
+		case h264.NALU_SPS:
+			if sps == nil {
+				sps = nalu
+			}
+		case h264.NALU_PPS:
+			if pps == nil {
+				pps = nalu
+			}
+		case h264.NALU_IDR:
+			if idr == nil {
+				idr = nalu
+			}
+		}
+	}
+	if sps == nil || pps == nil || idr == nil {
+		t.Fatal("fixture lacks sps/pps/idr units")
+	}
+
+	mk := func(seq byte, mark bool, payload []byte) []byte {
+		hdr := []byte{0x80, 0x60, 0x00, seq, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
+		if mark {
+			hdr[1] |= 0x80
+		}
+		return append(hdr, payload...)
+	}
+	pkts := [][]byte{
+		mk(1, false, sps),
+		mk(2, false, pps),
+		mk(4, true, idr),
+	}
+
+	server, err := newMockServer(&mockServer{
+		codec:   "h264",
+		packets: pkts,
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, server.URL())
+	if err != nil {
+		t.Fatalf("snapshot after gap failed: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil image")
+	}
+}
+
+func TestH264SpropTrackOnly(t *testing.T) {
+	data, err := os.ReadFile("testdata/black_idr.264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	var idr []byte
+	for _, nalu := range h264.ExtractNalusFromByteStream(data) {
+		if h264.NaluType(nalu[0]&0x1f) == h264.NALU_IDR {
+			idr = nalu
+			break
+		}
+	}
+	if idr == nil {
+		t.Fatal("fixture lacks idr unit")
+	}
+
+	hdr := []byte{0x80, 0xe0, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
+	server, err := newMockServer(&mockServer{
+		codec:   "h264sprop",
+		packets: [][]byte{append(hdr, idr...)},
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, server.URL())
+	if err != nil {
+		t.Fatalf("snapshot from sprop track failed: %v", err)
 	}
 	if img == nil {
 		t.Fatal("expected non-nil image")

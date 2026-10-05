@@ -1,9 +1,6 @@
 package h264
 
-import (
-	"encoding/binary"
-	"fmt"
-)
+import "fmt"
 
 type NaluType uint16
 
@@ -46,104 +43,4 @@ func (a NaluType) String() string {
 
 func GetNaluType(naluHeader byte) NaluType {
 	return NaluType(naluHeader & 0x1f)
-}
-
-func FindNaluTypes(sample []byte) []NaluType {
-	length := len(sample)
-	if length < 4 {
-		return nil
-	}
-	naluList := make([]NaluType, 0, 2)
-	var pos uint32 = 0
-	for pos < uint32(length-4) {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		naluType := GetNaluType(sample[pos])
-		naluList = append(naluList, naluType)
-		pos += naluLength
-	}
-	return naluList
-}
-
-func FindNaluTypesUpToFirstVideoNALU(sample []byte) []NaluType {
-	length := len(sample)
-	if length < 4 {
-		return nil
-	}
-	naluList := make([]NaluType, 0)
-	var pos uint32 = 0
-	for pos < uint32(length-4) {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		naluType := GetNaluType(sample[pos])
-		naluList = append(naluList, naluType)
-		pos += naluLength
-		if IsVideoNaluType(naluType) {
-			break
-		}
-	}
-	return naluList
-}
-
-func IsIDRSample(sample []byte) bool {
-	return ContainsNaluType(sample, NALU_IDR)
-}
-
-func ContainsNaluType(sample []byte, specificNalType NaluType) bool {
-	var pos uint32 = 0
-	length := len(sample)
-	for pos < uint32(length-4) {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		naluType := GetNaluType(sample[pos])
-		if naluType == specificNalType {
-			return true
-		}
-		pos += naluLength
-	}
-	return false
-}
-
-func HasParameterSets(b []byte) bool {
-	naluTypeList := FindNaluTypesUpToFirstVideoNALU(b)
-	hasSPS := false
-	hasPPS := false
-	for _, naluType := range naluTypeList {
-		if naluType == NALU_SPS {
-			hasSPS = true
-		}
-		if naluType == NALU_PPS {
-			hasPPS = true
-		}
-		if hasSPS && hasPPS {
-			return true
-		}
-	}
-	return false
-}
-
-func GetParameterSets(sample []byte) (sps [][]byte, pps [][]byte) {
-	sampleLength := uint32(len(sample))
-	var pos uint32 = 0
-naluLoop:
-	for pos < sampleLength {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		naluHdr := sample[pos]
-		switch naluType := GetNaluType(naluHdr); {
-		case naluType == NALU_SPS:
-			sps = append(sps, sample[pos:pos+naluLength])
-		case naluType == NALU_PPS:
-			pps = append(pps, sample[pos:pos+naluLength])
-		case IsVideoNaluType(naluType):
-			break naluLoop
-		}
-		pos += naluLength
-	}
-	return sps, pps
-}
-
-func IsVideoNaluType(naluType NaluType) bool {
-	const highestVideoNaluType = 5
-	return naluType <= highestVideoNaluType
 }

@@ -1,14 +1,10 @@
 package h264
 
-import (
-	"encoding/binary"
-	"fmt"
-)
+import "fmt"
 
 type Decoder struct {
 	spsMap         map[uint32]*SPS
 	ppsMap         map[uint32]*PPS
-	refFrame       *Frame
 	TraceMBCMP     bool
 	SkipDeblock    bool
 	frameSizeLimit int
@@ -166,201 +162,16 @@ func (d *Decoder) DecodeNALUs(nalus [][]byte) (*Frame, error) {
 			if err != nil {
 				return nil, err
 			}
-			d.refFrame = f
 			return f, nil
 		}
 	}
 	return nil, fmt.Errorf("no IDR NALU found")
 }
 
-func (d *Decoder) DecodeAllFrames(nalus [][]byte) ([]*Frame, error) {
-	return d.decodeFrames(nalus, true)
-}
-
-func (d *Decoder) DecodeIDRFrames(nalus [][]byte) ([]*Frame, error) {
-	return d.decodeFrames(nalus, false)
-}
-
-func (d *Decoder) decodeFrames(nalus [][]byte, includeNonIDR bool) ([]*Frame, error) {
-	var frames []*Frame
-
-	for _, nalu := range nalus {
-		if len(nalu) == 0 {
-			continue
-		}
-		naluType := NaluType(nalu[0] & 0x1f)
-
-		switch naluType {
-		case NALU_SPS:
-			sps, err := ParseSPSNALUnit(nalu, true)
-			if err != nil {
-				return frames, fmt.Errorf("parse SPS: %w", err)
-			}
-			d.spsMap[sps.ParameterID] = sps
-		case NALU_PPS:
-			pps, err := ParsePPSNALUnit(nalu, d.spsMap)
-			if err != nil {
-				return frames, fmt.Errorf("parse PPS: %w", err)
-			}
-			d.ppsMap[pps.PicParameterSetID] = pps
-		case NALU_IDR:
-			f, err := d.decodeIDR(nalu)
-			if err != nil {
-				return frames, fmt.Errorf("IDR frame %d: %w", len(frames), err)
-			}
-			d.refFrame = f
-			frames = append(frames, f)
-		case 1:
-			if !includeNonIDR {
-				continue
-			}
-			f, err := d.decodePSkip(nalu)
-			if err != nil {
-				return frames, fmt.Errorf("p frame %d: %w", len(frames), err)
-			}
-			d.refFrame = f
-			frames = append(frames, f)
-		}
-	}
-	return frames, nil
-}
-
 // decode annexb byte stream
 func (d *Decoder) DecodeAnnexB(data []byte) (*Frame, error) {
 	nalus := ExtractNalusFromByteStream(data)
 	return d.DecodeNALUs(nalus)
-}
-
-func (d *Decoder) DecodeAllAnnexB(data []byte) ([]*Frame, error) {
-	nalus := ExtractNalusFromByteStream(data)
-	return d.DecodeAllFrames(nalus)
-}
-
-func (d *Decoder) DecodeIDRAnnexB(data []byte) ([]*Frame, error) {
-	nalus := ExtractNalusFromByteStream(data)
-	return d.DecodeIDRFrames(nalus)
-}
-
-// decode length prefixed avc stream
-func (d *Decoder) DecodeAVC(data []byte) (*Frame, error) {
-	nalus, err := extractAVCNalus(data)
-	if err != nil {
-		return nil, err
-	}
-	return d.DecodeNALUs(nalus)
-}
-
-func (d *Decoder) DecodeAllAVC(data []byte) ([]*Frame, error) {
-	nalus, err := extractAVCNalus(data)
-	if err != nil {
-		return nil, err
-	}
-	return d.DecodeAllFrames(nalus)
-}
-
-func (d *Decoder) DecodeIDRAVC(data []byte) ([]*Frame, error) {
-	nalus, err := extractAVCNalus(data)
-	if err != nil {
-		return nil, err
-	}
-	return d.DecodeIDRFrames(nalus)
-}
-
-func extractAVCNalus(data []byte) ([][]byte, error) {
-	var nalus [][]byte
-	for len(data) >= 4 {
-		length := int(binary.BigEndian.Uint32(data[:4]))
-		data = data[4:]
-		if length < 0 || length > len(data) {
-			return nil, fmt.Errorf("AVC NALU length %d exceeds remaining data %d", length, len(data))
-		}
-		nalus = append(nalus, data[:length])
-		data = data[length:]
-	}
-	return nalus, nil
-}
-
-func cloneFrame(src *Frame) *Frame {
-	dst := NewFrame(src.Width, src.Height)
-	copy(dst.Y, src.Y)
-	copy(dst.Cb, src.Cb)
-	copy(dst.Cr, src.Cr)
-	return dst
-}
-
-func (d *Decoder) decodePSkip(nalu []byte) (*Frame, error) {
-	if d.refFrame == nil {
-		return nil, fmt.Errorf("P_Skip: no reference frame available")
-	}
-
-	sh, err := ParseSliceHeader(nalu, d.spsMap, d.ppsMap)
-	if err != nil {
-		return nil, fmt.Errorf("parse P-slice header: %w", err)
-	}
-
-	pps := d.ppsMap[sh.PicParamID]
-	sps := d.spsMap[pps.SeqParameterSetID]
-
-	width := int(sps.Width)
-	height := int(sps.Height)
-
-	if !pps.EntropyCodingModeFlag {
-		fullData := removeEBSPPrevention(nalu)
-		br := NewBitReader(fullData)
-		nalRefIdc := (nalu[0] >> 5) & 0x3
-
-		err = br.SkipSliceHeaderP(SliceHeaderParams{
-			FrameMbsOnly:                          sps.FrameMbsOnlyFlag,
-			Log2MaxFrameNumMinus4:                 uint(sps.Log2MaxFrameNumMinus4),
-			PicOrderCntType:                       uint(sps.PicOrderCntType),
-			Log2MaxPicOrderCntLsbMinus4:           uint(sps.Log2MaxPicOrderCntLsbMinus4),
-			BottomFieldPicOrderInFramePresentFlag: pps.BottomFieldPicOrderInFramePresentFlag,
-			DeblockingFilterControlPresent:        pps.DeblockingFilterControlPresentFlag,
-			RedundantPicCntPresentFlag:            pps.RedundantPicCntPresentFlag,
-		}, nalRefIdc)
-		if err != nil {
-			return nil, fmt.Errorf("skip P-slice header: %w", err)
-		}
-
-		mbSkipRun, err := br.ReadUE()
-		if err != nil {
-			return nil, fmt.Errorf("read mb_skip_run: %w", err)
-		}
-
-		totalMBs := ((width + 15) / 16) * ((height + 15) / 16)
-		if int(mbSkipRun) != totalMBs {
-			return nil, fmt.Errorf("P_Skip: mb_skip_run=%d, expected %d (non-skip P-frames not yet supported)",
-				mbSkipRun, totalMBs)
-		}
-	} else {
-		sliceData := removeEBSPPrevention(nalu[sh.Size:])
-		sliceQPY := 26 + int(pps.PicInitQpMinus26) + int(sh.SliceQPDelta)
-		dec, err2 := NewCabacDecoder(sliceData)
-		if err2 != nil {
-			return nil, fmt.Errorf("CABAC P_Skip: init decoder: %w", err2)
-		}
-		models := InitModels(sliceQPY, 0, int(sh.CabacInitIDC))
-		ctx := models[:]
-
-		totalMBs := ((width + 15) / 16) * ((height + 15) / 16)
-		for mbIdx := range totalMBs {
-			mbSkipFlag := dec.DecodeDecision(&ctx[11])
-			if mbSkipFlag != 1 {
-				return nil, fmt.Errorf("CABAC P-frame: non-skip MB %d not supported (mb_skip_flag=%d)",
-					mbIdx, mbSkipFlag)
-			}
-			isLast := mbIdx == totalMBs-1
-			term := dec.DecodeTerminate()
-			if isLast && term != 1 {
-				return nil, fmt.Errorf("CABAC P_Skip: expected end_of_slice at last MB %d", mbIdx)
-			}
-			if !isLast && term != 0 {
-				return nil, fmt.Errorf("CABAC P_Skip: unexpected end_of_slice at MB %d", mbIdx)
-			}
-		}
-	}
-
-	return cloneFrame(d.refFrame), nil
 }
 
 func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {

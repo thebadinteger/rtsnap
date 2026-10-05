@@ -119,34 +119,6 @@ func SplitAnnexB(data []byte) []NALUnit {
 	return nals
 }
 
-func SplitHVCC(data []byte, lengthSize int) []NALUnit {
-	var nals []NALUnit
-
-	if lengthSize < 1 || lengthSize > 4 {
-		return nals
-	}
-
-	for i := 0; i+lengthSize <= len(data); {
-		n := 0
-		for j := range lengthSize {
-			n = n<<8 | int(data[i+j])
-		}
-
-		i += lengthSize
-		if n == 0 || i+n > len(data) {
-			break
-		}
-
-		if nal, ok := ParseNAL(data[i : i+n]); ok {
-			nals = append(nals, nal)
-		}
-
-		i += n
-	}
-
-	return nals
-}
-
 func startCode(data []byte, off int) (next, start int, ok bool) {
 	for i := off; i+2 < len(data); i++ {
 		if data[i] != 0 || data[i+1] != 0 {
@@ -216,77 +188,4 @@ func (n NALUnit) NALOffset(off int) int {
 	}
 
 	return off
-}
-
-func marshalNAL(typ NALType, layerID, temporalID uint8, rbsp []byte) []byte {
-	out := make([]byte, 0, len(rbsp)+2)
-	out = append(out,
-		byte(typ)<<1|layerID>>5,
-		layerID<<3|(temporalID+1)&7,
-	)
-
-	return append(out, escapeRBSP(rbsp)...)
-}
-
-func MarshalNAL(nal NALUnit) []byte {
-	return marshalNAL(nal.Type, nal.LayerID, nal.TemporalID, nal.RBSP)
-}
-
-func marshalAnnexB(nals [][]byte) []byte {
-	var out []byte
-
-	for _, nal := range nals {
-		out = append(out, 0, 0, 0, 1)
-		out = append(out, nal...)
-	}
-
-	return out
-}
-
-func MarshalAnnexB(nals []NALUnit) []byte {
-	data := make([][]byte, len(nals))
-	for i := range nals {
-		data[i] = MarshalNAL(nals[i])
-	}
-
-	return marshalAnnexB(data)
-}
-
-func escapeRBSP(rbsp []byte) []byte {
-	out := make([]byte, 0, len(rbsp))
-	zeros := 0
-
-	for _, b := range rbsp {
-		if zeros == 2 && b <= 3 {
-			out = append(out, 3)
-			zeros = 0
-		}
-
-		out = append(out, b)
-
-		if b == 0 {
-			zeros++
-		} else {
-			zeros = 0
-		}
-	}
-
-	return out
-}
-
-func ProfileTierLevel(sps []byte) ([]byte, bool) {
-	if len(sps) < 13 {
-		return nil, false
-	}
-
-	return sps[1:13], true
-}
-
-func SPSFormat(sps []byte) (chromaFormat, bitDepthLuma, bitDepthChroma int, ok bool) {
-	s, err := parseSPS(sps)
-	if err != nil {
-		return 0, 0, 0, false
-	}
-
-	return int(s.chromaFormatIDC), int(s.bitDepthLuma), int(s.bitDepthChroma), true
 }

@@ -221,8 +221,10 @@ func (s *mockServer) handle(conn net.Conn) {
 		case "DESCRIBE":
 			var sdp string
 			switch s.codec {
-			case "h264":
-				sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\n"
+		case "h264":
+			sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\n"
+		case "h264sprop":
+			sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z2QAHqyyAWhf8uAiAAADAAIAAAMAZB4sXJA=,aOvMsiw=\r\na=control:track0\r\n"
 			case "h265":
 				sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H265/90000\r\na=control:track0\r\n"
 			case "mjpeg":

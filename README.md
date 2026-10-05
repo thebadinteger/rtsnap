@@ -144,7 +144,7 @@ Connects to the RTSP stream and queries available video tracks (codec, payload t
 
 | Codec | RFC | Profiles / Capabilities | Output Image Type | Documentation |
 |---|---|---|---|---|
-| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, 4x4 & 8x8 intra, deblocking | `*image.YCbCr` / `*image.NRGBA` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
+| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, 4x4 & 8x8 intra, deblocking | `*image.YCbCr` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
 | **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32, SIMD kernels (AVX2/NEON/RVV) | `*image.YCbCr` / `image.Image` | [pkg/h265](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h265) |
 | **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables | `*image.YCbCr` / `*image.Gray` | [pkg/mjpeg](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/mjpeg) |
 

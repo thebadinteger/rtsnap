@@ -187,8 +187,14 @@ func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, er
 
 // read mjpeg packets until full frame
 func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error) {
-	depack := rtp.NewMJPEGDepacketizer()
+	var depack *rtp.MJPEGDepacketizer
 	dec := mjpeg.NewDecoder()
+	reset := func() {
+		depack = rtp.NewMJPEGDepacketizer()
+	}
+	reset()
+	var lastSeq uint16
+	var seqSet bool
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -203,20 +209,40 @@ func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error)
 		if err := pkt.Unmarshal(frame.Payload); err != nil {
 			continue
 		}
+
+		if seqSet && pkt.SequenceNumber == lastSeq {
+			continue
+		}
+		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
+			reset()
+		}
+		lastSeq = pkt.SequenceNumber
+		seqSet = true
 
 		jpegBytes, err := depack.Decode(&pkt)
 		if err != nil {
 			continue
 		}
 		if len(jpegBytes) > 0 {
-			return dec.Decode(jpegBytes)
+			img, err := dec.Decode(jpegBytes)
+			if err != nil {
+				reset()
+				continue
+			}
+			return img, nil
 		}
 	}
 }
 
 // read mjpeg packets and return raw bytes
 func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
-	depack := rtp.NewMJPEGDepacketizer()
+	var depack *rtp.MJPEGDepacketizer
+	reset := func() {
+		depack = rtp.NewMJPEGDepacketizer()
+	}
+	reset()
+	var lastSeq uint16
+	var seqSet bool
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -231,6 +257,15 @@ func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
 		if err := pkt.Unmarshal(frame.Payload); err != nil {
 			continue
 		}
+
+		if seqSet && pkt.SequenceNumber == lastSeq {
+			continue
+		}
+		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
+			reset()
+		}
+		lastSeq = pkt.SequenceNumber
+		seqSet = true
 
 		raw, err := depack.Decode(&pkt)
 		if err != nil {
@@ -248,12 +283,18 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	dec := h264.New()
 	dec.SkipDeblock = fast
 	dec.FrameSizeLimit(maxFramePixels)
-	if len(client.Track.SPS) > 0 {
-		_, _ = dec.DecodeNALUs(client.Track.SPS)
+	feedParams := func() {
+		if len(client.Track.SPS) > 0 {
+			_, _ = safely(func() (*h264.Frame, error) { return dec.DecodeNALUs(client.Track.SPS) })
+		}
+		if len(client.Track.PPS) > 0 {
+			_, _ = safely(func() (*h264.Frame, error) { return dec.DecodeNALUs(client.Track.PPS) })
+		}
 	}
-	if len(client.Track.PPS) > 0 {
-		_, _ = dec.DecodeNALUs(client.Track.PPS)
-	}
+	feedParams()
+
+	var lastSeq uint16
+	var seqSet bool
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -269,6 +310,16 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			continue
 		}
 
+		if seqSet && pkt.SequenceNumber == lastSeq {
+			continue
+		}
+		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
+			depack = rtp.NewH264Depacketizer()
+			feedParams()
+		}
+		lastSeq = pkt.SequenceNumber
+		seqSet = true
+
 		nalus, err := depack.Decode(&pkt)
 		if err != nil {
 			continue
@@ -279,8 +330,7 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 
 		f, err := safely(func() (*h264.Frame, error) { return dec.DecodeNALUs(nalus) })
 		if err == nil && f != nil {
-			img := f.Image()
-			if img != nil {
+			if img := f.Image(); img != nil {
 				return img, nil
 			}
 		}
@@ -289,9 +339,11 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 
 // read h265 packets until first decodable frame
 func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Image, error) {
-	depack := rtp.NewH265Depacketizer()
+	var depack *rtp.H265Depacketizer
 	var dec h265.Decoder
+	var stash []h265.NALUnit
 	reset := func() {
+		depack = rtp.NewH265Depacketizer()
 		dec.Reset()
 		dec.SkipLoop = fast
 		dec.FrameSizeLimit(maxFramePixels)
@@ -310,8 +362,13 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 				_, _ = safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
 			}
 		}
+		for _, u := range stash {
+			_, _ = safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
+		}
 	}
 	reset()
+	var lastSeq uint16
+	var seqSet bool
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -327,6 +384,15 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			continue
 		}
 
+		if seqSet && pkt.SequenceNumber == lastSeq {
+			continue
+		}
+		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
+			reset()
+		}
+		lastSeq = pkt.SequenceNumber
+		seqSet = true
+
 		nalus, err := depack.Decode(&pkt)
 		if err != nil {
 			continue
@@ -336,6 +402,11 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			u, ok := h265.ParseNAL(nal)
 			if !ok {
 				continue
+			}
+
+			switch u.Type {
+			case h265.NALVPS, h265.NALSPS, h265.NALPPS:
+				stash = append(stash, u)
 			}
 
 			pics, err := safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })

@@ -8,9 +8,8 @@ import (
 )
 
 var (
-	ErrNoSliceHeader      = errors.New("no slice header")
-	ErrInvalidSliceType   = errors.New("invalid slice type")
-	ErrTooFewBytesToParse = errors.New("too few bytes to parse symbol")
+	ErrNoSliceHeader    = errors.New("no slice header")
+	ErrInvalidSliceType = errors.New("invalid slice type")
 )
 
 type SliceType uint
@@ -39,39 +38,6 @@ const (
 	SLICE_SP = SliceType(3)
 	SLICE_SI = SliceType(4)
 )
-
-func GetSliceTypeFromNALU(data []byte) (sliceType SliceType, err error) {
-
-	if len(data) <= 1 {
-		err = ErrTooFewBytesToParse
-		return
-	}
-
-	naluType := GetNaluType(data[0])
-	switch naluType {
-	case 1, 2, 5, 19:
-
-	default:
-		err = ErrNoSliceHeader
-		return
-	}
-	r := NewEBSPReader(bytes.NewReader((data[1:])))
-
-	_ = r.ReadExpGolomb()
-	sliceType = SliceType(r.ReadExpGolomb())
-	if r.AccError() != nil {
-		err = r.AccError()
-	}
-	if sliceType > 9 {
-		err = ErrInvalidSliceType
-		return
-	}
-
-	if sliceType >= 5 {
-		sliceType -= 5
-	}
-	return
-}
 
 type SliceHeader struct {
 	SliceType                     SliceType
