@@ -13,6 +13,7 @@ import (
 
 	"github.com/thebadinteger/rtsnap"
 	"github.com/thebadinteger/rtsnap/pkg/h264"
+	"github.com/thebadinteger/rtsnap/pkg/h265"
 )
 
 func hashImage(img image.Image) string {
@@ -334,5 +335,183 @@ func TestChaosMJPEGLoss(t *testing.T) {
 	got := snapshotHash(t, server.URL())
 	if got != ref {
 		t.Fatal("lost fragment poisoned next frame")
+	}
+}
+
+func TestChaosH265MidGOPJoin(t *testing.T) {
+	data, err := os.ReadFile("testdata/pgop.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	rawNALs := splitAnnexBNALBytes(data)
+	var irapIdx []int
+	for i, raw := range rawNALs {
+		if u, ok := h265.ParseNAL(raw); ok && u.Type.IsIRAP() {
+			irapIdx = append(irapIdx, i)
+		}
+	}
+	if len(irapIdx) < 2 {
+		t.Fatal("fixture lacks two keyframes")
+	}
+
+	var joined [][]byte
+	for i, raw := range rawNALs {
+		if i == irapIdx[0] {
+			continue
+		}
+		joined = append(joined, raw)
+	}
+	server := servePackets(t, "h265", makeRTPPacketsH265(joined))
+	defer server.Close()
+
+	got := snapshotHash(t, server.URL())
+
+	var refNALs [][]byte
+	refNALs = append(refNALs, rawNALs[:4]...)
+	refNALs = append(refNALs, rawNALs[irapIdx[1]])
+	refServer := servePackets(t, "h265", makeRTPPacketsH265(refNALs))
+	defer refServer.Close()
+
+	if got != snapshotHash(t, refServer.URL()) {
+		t.Fatal("mid gop join did not return clean keyframe")
+	}
+}
+
+func TestChaosH265NoKeyframe(t *testing.T) {
+	data, err := os.ReadFile("testdata/pgop.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	rawNALs := splitAnnexBNALBytes(data)
+	var first [][]byte
+	for i, raw := range rawNALs {
+		if u, ok := h265.ParseNAL(raw); ok && u.Type.IsIRAP() {
+			first = rawNALs[:i]
+			break
+		}
+	}
+	if len(first) == 0 {
+		t.Fatal("fixture lacks keyframe")
+	}
+
+	server := servePackets(t, "h265", makeRTPPacketsH265(first))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if _, err := rtsnap.Snapshot(ctx, server.URL()); err == nil {
+		t.Fatal("expected timeout without keyframe, got image")
+	}
+}
+
+func TestChaosH265FullPStream(t *testing.T) {
+	data, err := os.ReadFile("testdata/pgop.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	rawNALs := splitAnnexBNALBytes(data)
+	end := len(rawNALs)
+	for i, raw := range rawNALs {
+		if u, ok := h265.ParseNAL(raw); ok && u.Type.IsIRAP() {
+			end = i + 1
+			break
+		}
+	}
+
+	ref := snapshotHash(t, servePackets(t, "h265", makeRTPPacketsH265(rawNALs[:end])).URL())
+	server := servePackets(t, "h265", makeRTPPacketsH265(rawNALs))
+	defer server.Close()
+
+	got := snapshotHash(t, server.URL())
+	if got != ref {
+		t.Fatal("p stream changed keyframe pixels")
+	}
+}
+
+func TestChaosH264MidGOPJoin(t *testing.T) {
+	data, err := os.ReadFile("testdata/pgop.h264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	nalus := h264.ExtractNalusFromByteStream(data)
+	var firstIDR, secondIDR int = -1, -1
+	for i, nalu := range nalus {
+		if h264.NaluType(nalu[0]&0x1f) == h264.NALU_IDR {
+			if firstIDR < 0 {
+				firstIDR = i
+			} else if secondIDR < 0 {
+				secondIDR = i
+			}
+		}
+	}
+	if firstIDR < 0 || secondIDR < 0 {
+		t.Fatal("fixture lacks two keyframes")
+	}
+
+	var refSPS, refPPS []byte
+	for i := secondIDR - 1; i >= 0; i-- {
+		switch h264.NaluType(nalus[i][0] & 0x1f) {
+		case h264.NALU_SPS:
+			if refSPS == nil {
+				refSPS = nalus[i]
+			}
+		case h264.NALU_PPS:
+			if refPPS == nil {
+				refPPS = nalus[i]
+			}
+		}
+	}
+	if refSPS == nil || refPPS == nil {
+		t.Fatal("fixture lacks param sets before second keyframe")
+	}
+	ref := snapshotHash(t, servePackets(t, "h264", makeRTPPacketsH264([][]byte{refSPS, refPPS, nalus[secondIDR]})).URL())
+
+	var joined [][]byte
+	for i, nalu := range nalus {
+		if i == firstIDR {
+			continue
+		}
+		joined = append(joined, nalu)
+	}
+	server := servePackets(t, "h264", makeRTPPacketsH264(joined))
+	defer server.Close()
+
+	got := snapshotHash(t, server.URL())
+	if got != ref {
+		t.Fatal("mid gop join did not return clean keyframe")
+	}
+}
+
+func TestChaosH264NoKeyframe(t *testing.T) {
+	data, err := os.ReadFile("testdata/pgop.h264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	nalus := h264.ExtractNalusFromByteStream(data)
+	var head [][]byte
+	for _, nalu := range nalus {
+		if h264.NaluType(nalu[0]&0x1f) == h264.NALU_IDR {
+			break
+		}
+		head = append(head, nalu)
+	}
+	if len(head) == 0 {
+		t.Fatal("fixture lacks leading non keyframe units")
+	}
+
+	server := servePackets(t, "h264", makeRTPPacketsH264(head))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if _, err := rtsnap.Snapshot(ctx, server.URL()); err == nil {
+		t.Fatal("expected timeout without keyframe, got image")
 	}
 }

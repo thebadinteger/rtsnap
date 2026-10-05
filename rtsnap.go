@@ -342,7 +342,11 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	var depack *rtp.H265Depacketizer
 	var dec h265.Decoder
 	var stash []h265.NALUnit
+	var lastSeq uint16
+	var seqSet bool
+	var seenIRAP bool
 	reset := func() {
+		seenIRAP = false
 		depack = rtp.NewH265Depacketizer()
 		dec.Reset()
 		dec.SkipLoop = fast
@@ -367,8 +371,6 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 		}
 	}
 	reset()
-	var lastSeq uint16
-	var seqSet bool
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -409,19 +411,26 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 				stash = append(stash, u)
 			}
 
+			firstRAP := u.Type.IsIRAP() && !seenIRAP
+			if u.Type.IsIRAP() {
+				seenIRAP = true
+			}
+
 			pics, err := safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
 			if err != nil {
 				reset()
 				continue
 			}
-			for _, p := range pics {
-				if img := p.Image(); img != nil {
-					return img, nil
+			if seenIRAP && !firstRAP {
+				for _, p := range pics {
+					if img := p.Image(); img != nil {
+						return img, nil
+					}
 				}
 			}
 
-			// check if picture is ready after intra random access point
-			if u.Type.IsIRAP() {
+			// flush only complete pictures
+			if u.Type.IsIRAP() && pkt.Marker {
 				flush, _ := safely(func() ([]*h265.Picture, error) { return dec.Flush(), nil })
 				for _, p := range flush {
 					if img := p.Image(); img != nil {
