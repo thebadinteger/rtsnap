@@ -2,6 +2,16 @@ package h264
 
 import "image"
 
+func clipUint8(v int) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}
+
 type Frame struct {
 	Width    int
 	Height   int
@@ -144,20 +154,10 @@ func (f *Frame) NRGBA() *image.NRGBA {
 			g := (298*c - 100*d - 208*e + 128) >> 8
 			b := (298*c + 516*d + 128) >> 8
 
-			clamp := func(v int) uint8 {
-				if v < 0 {
-					return 0
-				}
-				if v > 255 {
-					return 255
-				}
-				return uint8(v)
-			}
-
 			off := y*img.Stride + x*4
-			img.Pix[off+0] = clamp(r)
-			img.Pix[off+1] = clamp(g)
-			img.Pix[off+2] = clamp(b)
+			img.Pix[off+0] = clipUint8(r)
+			img.Pix[off+1] = clipUint8(g)
+			img.Pix[off+2] = clipUint8(b)
 			img.Pix[off+3] = 255
 		}
 	}

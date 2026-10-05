@@ -14,7 +14,7 @@ func main() {
 	defer cancel()
 
 	// connect to rtsp server
-	client, err := rtsp.Dial(ctx, "rtsp://localhost:8554/stream", "", "")
+	client, err := rtsp.Dial(ctx, "rtsp://localhost:8554/stream", "", "", true)
 	if err != nil {
 		panic(err)
 	}

@@ -92,9 +92,12 @@ func TestRequestResponse(t *testing.T) {
 	}
 
 	rawResponse := "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: 4\r\n\r\ntest"
-	res, err := readResponse(bufio.NewReader(strings.NewReader(rawResponse)))
+	res, raw, err := readResponse(bufio.NewReader(strings.NewReader(rawResponse)))
 	if err != nil {
 		t.Fatalf("read response: %v", err)
+	}
+	if raw != rawResponse {
+		t.Fatalf("raw mismatch: %q", raw)
 	}
 
 	if res.StatusCode != 200 {

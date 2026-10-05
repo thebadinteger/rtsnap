@@ -69,10 +69,7 @@ func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Opti
 	defer func() { _ = client.Teardown(ctx) }()
 
 	if client.Track.Codec == "mjpeg" && !o.Transcode {
-		raw, err := captureMJPEGRaw(ctx, client)
-		if err == nil && len(raw) > 0 {
-			return raw, nil
-		}
+		return captureMJPEGRaw(ctx, client)
 	}
 
 	var img image.Image
@@ -95,6 +92,7 @@ func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Opti
 	}
 
 	var buf bytes.Buffer
+	buf.Grow(256 * 1024)
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
 		return nil, fmt.Errorf("encode jpeg: %w", err)
 	}
@@ -118,7 +116,7 @@ type StreamInfo struct {
 // open connection and read stream description
 func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Context, *rtsp.Client, Options, context.CancelFunc, error) {
 	o := Options{
-		Timeout: 10 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(&o)
@@ -129,19 +127,21 @@ func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Conte
 		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
 	}
 
-	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password)
+	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password, !o.TLSVerify)
 	if err != nil {
 		cancel()
 		return nil, nil, o, nil, err
 	}
+
+	client.Transport = o.Transport
+	client.UserAgent = o.UserAgent
+	client.DebugFunc = o.DebugFunc
 
 	if err := client.Describe(ctx); err != nil {
 		_ = client.Close()
 		cancel()
 		return nil, nil, o, nil, err
 	}
-
-	client.Transport = o.Transport
 
 	return ctx, client, o, cancel, nil
 }
@@ -237,9 +237,7 @@ func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
 			continue
 		}
 		if len(raw) > 0 {
-			out := make([]byte, len(raw))
-			copy(out, raw)
-			return out, nil
+			return raw, nil
 		}
 	}
 }
@@ -294,7 +292,7 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	depack := rtp.NewH265Depacketizer()
 	var dec h265.Decoder
 	reset := func() {
-		dec = h265.Decoder{}
+		dec.Reset()
 		dec.SkipLoop = fast
 		dec.FrameSizeLimit(maxFramePixels)
 		for _, vps := range client.Track.VPS {

@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	rtspProto = "RTSP/1.0"
-	magicByte = 0x24
+	rtspProto       = "RTSP/1.0"
+	magicByte       = 0x24
+	maxResponseBody = 16 << 20 // 16mb cap on response body
+	maxHeaderLines  = 128
 )
 
 type Request struct {
@@ -21,8 +23,8 @@ type Request struct {
 	Body    []byte
 }
 
-// serialize request to wire
-func (r *Request) Write(w io.Writer) error {
+// serialize request to bytes
+func (r *Request) Bytes() []byte {
 	var b bytes.Buffer
 	b.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Method, r.URI, rtspProto))
 	for k, v := range r.Headers {
@@ -35,7 +37,12 @@ func (r *Request) Write(w io.Writer) error {
 	if len(r.Body) > 0 {
 		b.Write(r.Body)
 	}
-	_, err := w.Write(b.Bytes())
+	return b.Bytes()
+}
+
+// serialize request to wire
+func (r *Request) Write(w io.Writer) error {
+	_, err := w.Write(r.Bytes())
 	return err
 }
 
@@ -59,19 +66,21 @@ func (r *Response) Header(key string) string {
 }
 
 // parse status line and headers
-func readResponse(br *bufio.Reader) (*Response, error) {
+func readResponse(br *bufio.Reader) (*Response, string, error) {
+	var raw strings.Builder
 	line, err := br.ReadString('\n')
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	raw.WriteString(line)
 	line = strings.TrimRight(line, "\r\n")
 	parts := strings.SplitN(line, " ", 3)
 	if len(parts) < 2 {
-		return nil, fmt.Errorf("malformed status line: %s", line)
+		return nil, "", fmt.Errorf("malformed status line: %s", line)
 	}
 	code, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return nil, fmt.Errorf("invalid status code: %s", parts[1])
+		return nil, "", fmt.Errorf("invalid status code: %s", parts[1])
 	}
 	msg := ""
 	if len(parts) == 3 {
@@ -79,11 +88,15 @@ func readResponse(br *bufio.Reader) (*Response, error) {
 	}
 
 	headers := make(map[string]string)
-	for {
+	for n := 0; ; n++ {
+		if n > maxHeaderLines {
+			return nil, "", fmt.Errorf("too many response headers")
+		}
 		hline, err := br.ReadString('\n')
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
+		raw.WriteString(hline)
 		hline = strings.TrimRight(hline, "\r\n")
 		if hline == "" {
 			break
@@ -106,16 +119,20 @@ func readResponse(br *bufio.Reader) (*Response, error) {
 	if clStr != "" {
 		cl, err := strconv.Atoi(clStr)
 		if err == nil && cl > 0 {
+			if cl > maxResponseBody {
+				return nil, "", fmt.Errorf("response body too large: %d bytes", cl)
+			}
 			body := make([]byte, cl)
 			_, err = io.ReadFull(br, body)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			res.Body = body
+			raw.Write(body)
 		}
 	}
 
-	return res, nil
+	return res, raw.String(), nil
 }
 
 type Frame struct {

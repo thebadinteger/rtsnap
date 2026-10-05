@@ -227,3 +227,75 @@ func TestMJPEGTranscode(t *testing.T) {
 		t.Fatal("expected non-nil decoded image")
 	}
 }
+
+func TestMJPEGRawCameraSimulation(t *testing.T) {
+	// simulate real camera: just raw scan data without dht markers
+	// the rtp mjpeg depacketizer reconstructs full jpeg with headers
+	const w, h = 16, 16
+	src := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			src.Set(x, y, color.RGBA{R: 80, G: 160, B: 40, A: 255})
+		}
+	}
+
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, src, &jpeg.Options{Quality: 75})
+	data := buf.Bytes()
+
+	// extract only the entropy coded scan data (after SOS header)
+	sosIdx := bytes.Index(data, []byte{0xFF, 0xDA})
+	if sosIdx == -1 {
+		t.Fatal("no SOS marker found in test jpeg")
+	}
+	sosLen := int(data[sosIdx+2])<<8 | int(data[sosIdx+3])
+	scanStart := sosIdx + 2 + sosLen
+	scanEnd := len(data)
+	if bytes.HasSuffix(data, []byte{0xFF, 0xD9}) {
+		scanEnd -= 2
+	}
+	rawScan := data[scanStart:scanEnd]
+
+	// build rtp mjpeg packet with q < 128 so depacketizer generates
+	// standard quantization tables from scratch
+	hdr := []byte{
+		0x80, 0x9A, // version + marker + PT=26
+		0x00, 0x01, // seq
+		0x00, 0x00, 0x01, 0x00, // timestamp
+		0xAA, 0xBB, 0xCC, 0xDD, // ssrc
+	}
+	jpegHdr := []byte{
+		0x00,             // type specific
+		0x00, 0x00, 0x00, // fragment offset = 0
+		0x01,             // jpeg type 1 (YUV 4:2:0)
+		75,               // Q factor < 128 = standard tables
+		byte(w / 8),
+		byte(h / 8),
+	}
+	pkt := append(hdr, jpegHdr...)
+	pkt = append(pkt, rawScan...)
+
+	server, err := newMockServer(&mockServer{
+		codec:   "mjpeg",
+		packets: [][]byte{pkt},
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, server.URL())
+	if err != nil {
+		t.Fatalf("raw camera mjpeg snapshot failed: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil image")
+	}
+	b := img.Bounds()
+	if b.Dx() != w || b.Dy() != h {
+		t.Fatalf("expected %dx%d, got %dx%d", w, h, b.Dx(), b.Dy())
+	}
+}

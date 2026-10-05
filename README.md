@@ -101,6 +101,8 @@ Practical and runnable code examples are available in the [`examples/`](examples
 - [examples/codec](examples/codec/main.go) - Explicit codec selection and fallback handling
 - [examples/query](examples/query/main.go) - Inspecting streams and discovering available tracks without capturing
 - [examples/timeout](examples/timeout/main.go) - Proper handling of contexts, deadlines, and network timeouts
+- [examples/transport](examples/transport/main.go) - UDP transport with automatic TCP fallback
+- [examples/debug](examples/debug/main.go) - Printing raw RTSP exchange while capturing
 - [examples/lowlevel](examples/lowlevel/main.go) - Low-level RTSP client session negotiation and raw RTP packet reading
 - [examples/h264](examples/h264/main.go) - Manual H.264 depacketization and NAL decoding
 - [examples/mjpeg](examples/mjpeg/main.go) - Manual MJPEG depacketization and JPEG frame reconstruction
@@ -133,6 +135,10 @@ Connects to the RTSP stream and queries available video tracks (codec, payload t
 - `WithCodec(c Codec)`: Selects a preferred video codec (`rtsnap.CodecH264`, `rtsnap.CodecH265`, `rtsnap.CodecMJPEG`, or `rtsnap.CodecAuto`). By default, `CodecAuto` selects the highest priority available codec (`H.264` > `H.265` > `MJPEG`)
 - `WithFast()`: Skips loop filters (`H.264` deblocking, `H.265` deblocking and SAO) for faster decoding with negligible quality loss on single snapshots
 - `WithTransport(t Transport)`: Selects RTP transport (`rtsnap.TransportTCP`, `rtsnap.TransportUDP`, `rtsnap.TransportAuto`). Defaults to TCP interleaved. `Auto` tries UDP first and falls back to TCP when the camera rejects it
+- `WithTranscode()`: Forces MJPEG streams to be decoded and re-encoded in `SnapshotJPEG` (default is raw passthrough)
+- `WithUserAgent(ua string)`: Overrides the `User-Agent` header (default `rtsnap`), some picky cameras/servers require values like `VLC/3.0.16`
+- `WithDebugFunc(fn func(string))`: Receives raw RTSP request/response text as it happens
+- `WithTLSVerify()`: Enables TLS certificate verification for `rtsps` connections (default is insecure)
 
 ## Codecs
 
@@ -180,7 +186,7 @@ rtsnap/
 ```
 
 Transports: TCP interleaved (default), UDP unicast, auto UDP with TCP fallback  
-`rtsps` skips TLS certificate verification because cameras use self-signed certificates
+`rtsps` skips TLS certificate verification by default because cameras usually use self-signed certificates, but it can be enabled via `WithTLSVerify()`
 
 ## Documentation
 Docs live on **[pkg.go.dev/github.com/thebadinteger/rtsnap](https://pkg.go.dev/github.com/thebadinteger/rtsnap)**

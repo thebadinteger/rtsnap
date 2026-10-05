@@ -34,6 +34,8 @@ type mockServer struct {
 
 	udpConn   net.PacketConn
 	udpTarget *net.UDPAddr
+
+	lastUA string
 }
 
 func udpClientPort(trans string) (string, int) {
@@ -189,6 +191,11 @@ func (s *mockServer) handle(conn net.Conn) {
 			}
 			if strings.HasPrefix(h, "Transport:") {
 				transportHeader = strings.TrimSpace(strings.TrimPrefix(h, "Transport:"))
+			}
+			if strings.HasPrefix(h, "User-Agent:") {
+				s.mu.Lock()
+				s.lastUA = strings.TrimSpace(strings.TrimPrefix(h, "User-Agent:"))
+				s.mu.Unlock()
 			}
 		}
 

@@ -33,6 +33,9 @@ type Options struct {
 	Transport Transport
 	Fast      bool
 	Transcode bool
+	UserAgent string
+	DebugFunc func(string)
+	TLSVerify bool
 }
 
 type Option func(*Options)
@@ -73,9 +76,30 @@ func WithTranscode() Option {
 	}
 }
 
+// override user agent header
+func WithUserAgent(ua string) Option {
+	return func(o *Options) {
+		o.UserAgent = ua
+	}
+}
+
+// receive raw rtsp exchange
+func WithDebugFunc(fn func(string)) Option {
+	return func(o *Options) {
+		o.DebugFunc = fn
+	}
+}
+
 // choose rtp transport
 func WithTransport(t Transport) Option {
 	return func(o *Options) {
 		o.Transport = t
+	}
+}
+
+// enable tls certificate verification for rtsps
+func WithTLSVerify() Option {
+	return func(o *Options) {
+		o.TLSVerify = true
 	}
 }

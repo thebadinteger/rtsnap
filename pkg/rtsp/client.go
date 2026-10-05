@@ -25,6 +25,8 @@ type Client struct {
 	Tracks     []*MediaTrack
 	Track      *MediaTrack
 	Transport  Transport
+	UserAgent  string
+	DebugFunc  func(string)
 	rtpChannel int
 	udp        bool
 	udpRTP     net.PacketConn
@@ -33,7 +35,7 @@ type Client struct {
 }
 
 // open tcp connection to rtsp server
-func Dial(ctx context.Context, rtspURL string, user, pass string) (*Client, error) {
+func Dial(ctx context.Context, rtspURL string, user, pass string, tlsSkipVerify bool) (*Client, error) {
 	u, err := url.Parse(rtspURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid rtsp url: %w", err)
@@ -65,7 +67,7 @@ func Dial(ctx context.Context, rtspURL string, user, pass string) (*Client, erro
 	var conn net.Conn
 	if strings.EqualFold(u.Scheme, "rtsps") {
 		conn, err = tls.DialWithDialer(&d, "tcp", host, &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: tlsSkipVerify,
 		})
 	} else {
 		conn, err = d.DialContext(ctx, "tcp", host)
@@ -104,7 +106,11 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 		req.Headers = make(map[string]string)
 	}
 	req.Headers["CSeq"] = strconv.Itoa(c.nextCSeq())
-	req.Headers["User-Agent"] = "rtsnap"
+	ua := c.UserAgent
+	if ua == "" {
+		ua = "rtsnap"
+	}
+	req.Headers["User-Agent"] = ua
 
 	if c.session != "" {
 		req.Headers["Session"] = c.session
@@ -114,14 +120,21 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 		req.Headers["Authorization"] = c.auth.Generate(req.Method, req.URI)
 	}
 
-	if err := req.Write(c.conn); err != nil {
+	rawReq := req.Bytes()
+	if c.DebugFunc != nil {
+		c.DebugFunc("> " + string(rawReq))
+	}
+	if _, err := c.conn.Write(rawReq); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, err
 	}
 
-	res, err := readResponse(c.reader)
+	res, rawRes, err := readResponse(c.reader)
+	if c.DebugFunc != nil && rawRes != "" {
+		c.DebugFunc("< " + rawRes)
+	}
 	if err != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}

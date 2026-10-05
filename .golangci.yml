@@ -8,7 +8,10 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - errcheck
+    - gosimple
 
 issues:
   exclude-dirs:
     - src
+    - tests/testdata

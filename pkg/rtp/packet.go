@@ -60,9 +60,10 @@ func (p *Packet) Unmarshal(data []byte) error {
 	payload := data[offset:]
 	if p.Padding && len(payload) > 0 {
 		padLen := int(payload[len(payload)-1])
-		if padLen <= len(payload) {
-			payload = payload[:len(payload)-padLen]
+		if padLen == 0 || padLen > len(payload) {
+			return fmt.Errorf("invalid rtp padding length: %d", padLen)
 		}
+		payload = payload[:len(payload)-padLen]
 	}
 
 	p.Payload = payload

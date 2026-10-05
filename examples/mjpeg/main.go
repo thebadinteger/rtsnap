@@ -15,7 +15,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := rtsp.Dial(ctx, "rtsp://localhost:8554/mjpeg", "", "")
+	client, err := rtsp.Dial(ctx, "rtsp://localhost:8554/mjpeg", "", "", true)
 	if err != nil {
 		panic(err)
 	}

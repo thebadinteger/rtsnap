@@ -221,8 +221,13 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 		frameCropWidth := sps.FrameCropLeftOffset + sps.FrameCropRightOffset
 		frameCropHeight := sps.FrameCropTopOffset + sps.FrameCropBottomOffset
 
-		sps.Width -= frameCropWidth * cropUnitX
-		sps.Height -= frameCropHeight * cropUnitY
+		cropW := frameCropWidth * cropUnitX
+		cropH := frameCropHeight * cropUnitY
+		if cropW > sps.Width || cropH > sps.Height {
+			return nil, fmt.Errorf("crop %dx%d exceeds frame %dx%d", cropW, cropH, sps.Width, sps.Height)
+		}
+		sps.Width -= cropW
+		sps.Height -= cropH
 	}
 
 	if sps.Width == 0 || sps.Height == 0 || sps.Width > 16384 || sps.Height > 16384 {

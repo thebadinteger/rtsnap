@@ -1,6 +1,9 @@
 package h265
 
-import "image"
+import (
+	"image"
+	"sync/atomic"
+)
 
 type Picture struct {
 	Width, Height int
@@ -40,17 +43,15 @@ func (p *Picture) Release() {
 
 func (p *Picture) acquire() {
 	if p != nil {
-		p.refs++
+		atomic.AddInt32(&p.refs, 1)
 	}
 }
 
 func (p *Picture) release() {
-	if p == nil || p.refs == 0 {
+	if p == nil {
 		return
 	}
-
-	p.refs--
-	if p.refs > 0 {
+	if atomic.AddInt32(&p.refs, -1) != 0 {
 		return
 	}
 

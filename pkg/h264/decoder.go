@@ -453,26 +453,21 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 }
 
 func removeEBSPPrevention(data []byte) []byte {
-	found := false
-	for i := 0; i+2 < len(data); i++ {
-		if data[i] == 0 && data[i+1] == 0 && data[i+2] == 3 {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return data
-	}
-	result := make([]byte, 0, len(data))
-	i := 0
-	for i < len(data) {
+	var result []byte
+	for i := 0; i < len(data); i++ {
 		if i+2 < len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 3 {
+			if result == nil {
+				result = make([]byte, 0, len(data))
+				result = append(result, data[:i]...)
+			}
 			result = append(result, 0, 0)
-			i += 3
-		} else {
+			i += 2
+		} else if result != nil {
 			result = append(result, data[i])
-			i++
 		}
+	}
+	if result == nil {
+		return data
 	}
 	return result
 }

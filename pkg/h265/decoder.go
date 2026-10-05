@@ -31,6 +31,15 @@ type Decoder struct {
 // cap decoded frame size in pixels
 func (d *Decoder) FrameSizeLimit(n int) { d.frameSizeLimit = n }
 
+// reset decoder state but keep buffer pool
+func (d *Decoder) Reset() {
+	for i := range d.dpb {
+		d.dpb[i].pic.release()
+	}
+	pool := d.pool
+	*d = Decoder{pool: pool}
+}
+
 // feed single nal unit into decoder
 func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
 	if d.sps == nil {
