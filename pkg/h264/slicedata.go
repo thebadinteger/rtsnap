@@ -26,22 +26,43 @@ func putMBs(buf []MBData) {
 	}
 }
 
+func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB int) (int, error) {
+	models := InitModels(sliceQPY, 2, 0)
+	dec, err := NewCabacDecoder(sliceData)
+	if err != nil {
+		return firstMB, fmt.Errorf("cabac init: %w", err)
+	}
+
+	sc.Cabac = dec
+	sc.Ctx = (*[1024]CtxState)(&models)
+	sc.QPY = sliceQPY
+
+	lastMB := firstMB
+	for mbIdx := firstMB; mbIdx < sc.TotalMBs; mbIdx++ {
+		sc.MBs[mbIdx].QPY = sliceQPY
+		err := decodeMacroblock(sc, mbIdx)
+		if err != nil {
+			return lastMB, fmt.Errorf("mb %d: %w", mbIdx, err)
+		}
+		lastMB = mbIdx + 1
+
+		if mbIdx < sc.TotalMBs-1 {
+			endOfSlice := dec.DecodeTerminate()
+			if endOfSlice == 1 {
+				break
+			}
+		}
+	}
+
+	return lastMB, nil
+}
+
 func DecodeSliceData(sliceData []byte, sliceQPY int, mbWidth, mbHeight int,
 	transform8x8ModeFlag bool, chromaArrayType int,
 	bitDepthY, bitDepthC int, chromaQpIndexOffset int, traceMBCMP bool) (*SliceContext, error) {
 
 	totalMBs := mbWidth * mbHeight
-
-	models := InitModels(sliceQPY, 2, 0)
-
-	dec, err := NewCabacDecoder(sliceData)
-	if err != nil {
-		return nil, fmt.Errorf("cabac init: %w", err)
-	}
-
 	sc := &SliceContext{
-		Cabac:                dec,
-		Ctx:                  (*[1024]CtxState)(&models),
 		MBWidth:              mbWidth,
 		MBHeight:             mbHeight,
 		TotalMBs:             totalMBs,
@@ -59,21 +80,8 @@ func DecodeSliceData(sliceData []byte, sliceQPY int, mbWidth, mbHeight int,
 		sc.MBs[i].QPY = sliceQPY
 	}
 
-	for mbIdx := range totalMBs {
-		err := decodeMacroblock(sc, mbIdx)
-		if err != nil {
-			return sc, fmt.Errorf("mb %d: %w", mbIdx, err)
-		}
-
-		if mbIdx < totalMBs-1 {
-			endOfSlice := dec.DecodeTerminate()
-			if endOfSlice == 1 {
-				break
-			}
-		}
-	}
-
-	return sc, nil
+	_, err := decodeSliceCABAC(sc, sliceData, sliceQPY, 0)
+	return sc, err
 }
 
 func decodeMacroblock(sc *SliceContext, mbIdx int) error {
@@ -241,6 +249,24 @@ func decodeIPCM(sc *SliceContext, mbIdx int) error {
 	return nil
 }
 
+func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int) (int, error) {
+	sc.IsCAVLC = true
+	sc.Br = br
+	sc.QPY = sliceQPY
+
+	lastMB := firstMB
+	for mbIdx := firstMB; mbIdx < sc.TotalMBs; mbIdx++ {
+		sc.MBs[mbIdx].QPY = sliceQPY
+		err := decodeMacroblockCAVLC(sc, mbIdx)
+		if err != nil {
+			return lastMB, fmt.Errorf("mb %d: %w", mbIdx, err)
+		}
+		lastMB = mbIdx + 1
+	}
+
+	return lastMB, nil
+}
+
 func DecodeSliceDataCAVLC(br *BitReader, sliceQPY int, mbWidth, mbHeight int,
 	transform8x8ModeFlag bool, chromaArrayType int,
 	bitDepthY, bitDepthC int, chromaQpIndexOffset int, traceMBCMP bool) (*SliceContext, error) {
@@ -267,14 +293,8 @@ func DecodeSliceDataCAVLC(br *BitReader, sliceQPY int, mbWidth, mbHeight int,
 		sc.MBs[i].QPY = sliceQPY
 	}
 
-	for mbIdx := range totalMBs {
-		err := decodeMacroblockCAVLC(sc, mbIdx)
-		if err != nil {
-			return sc, fmt.Errorf("mb %d: %w", mbIdx, err)
-		}
-	}
-
-	return sc, nil
+	_, err := decodeSliceCAVLC(sc, br, sliceQPY, 0)
+	return sc, err
 }
 
 func decodeMacroblockCAVLC(sc *SliceContext, mbIdx int) error {

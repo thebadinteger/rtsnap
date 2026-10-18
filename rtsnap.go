@@ -315,6 +315,7 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 		}
 		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
 			depack = rtp.NewH264Depacketizer()
+			dec.Reset()
 			feedParams()
 		}
 		lastSeq = pkt.SequenceNumber

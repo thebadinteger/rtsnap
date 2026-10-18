@@ -8,6 +8,15 @@ type Decoder struct {
 	TraceMBCMP     bool
 	SkipDeblock    bool
 	frameSizeLimit int
+
+	curSliceCtx       *SliceContext
+	curFrame          *Frame
+	curSPS            *SPS
+	curPPS            *PPS
+	curDeblockAlpha   int
+	curDeblockBeta    int
+	curDisableDeblock uint32
+	decodedMBCount    int
 }
 
 // cap decoded frame size in pixels
@@ -136,6 +145,18 @@ func New() *Decoder {
 	}
 }
 
+// reset intermediate frame state
+func (d *Decoder) Reset() {
+	if d.curSliceCtx != nil {
+		putMBs(d.curSliceCtx.MBs)
+		d.curSliceCtx = nil
+	}
+	d.curFrame = nil
+	d.curSPS = nil
+	d.curPPS = nil
+	d.decodedMBCount = 0
+}
+
 // decode nal units until first frame
 func (d *Decoder) DecodeNALUs(nalus [][]byte) (*Frame, error) {
 	for _, nalu := range nalus {
@@ -162,10 +183,12 @@ func (d *Decoder) DecodeNALUs(nalus [][]byte) (*Frame, error) {
 			if err != nil {
 				return nil, err
 			}
-			return f, nil
+			if f != nil {
+				return f, nil
+			}
 		}
 	}
-	return nil, fmt.Errorf("no IDR NALU found")
+	return nil, nil
 }
 
 // decode annexb byte stream
@@ -190,27 +213,73 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 	}
 	mbWidth := (width + 15) / 16
 	mbHeight := (height + 15) / 16
+	totalMBs := mbWidth * mbHeight
 
-	sliceQPY := 26 + int(pps.PicInitQpMinus26) + int(sh.SliceQPDelta)
-
-	chromaArrayType := 1
-	if sps.ChromaFormatIDC == 0 {
-		chromaArrayType = 0
+	firstMB := int(sh.FirstMBInSlice)
+	if firstMB >= totalMBs {
+		d.Reset()
+		return nil, fmt.Errorf("first_mb_in_slice %d out of bounds (%d)", firstMB, totalMBs)
 	}
 
-	bitDepthY := 8 + int(sps.BitDepthLumaMinus8)
-	bitDepthC := 8 + int(sps.BitDepthChromaMinus8)
+	if firstMB == 0 {
+		d.Reset()
 
-	var sc *SliceContext
+		f := NewFrame(width, height)
+		if sps.VUI != nil {
+			if sps.VUI.ColourDescriptionFlag {
+				f.ColorDescriptionValid = true
+				f.MatrixCoefficients = sps.VUI.MatrixCoefficients
+			}
+			f.VideoFullRangeFlag = sps.VUI.VideoFullRangeFlag
+		}
+
+		chromaArrayType := 1
+		if sps.ChromaFormatIDC == 0 {
+			chromaArrayType = 0
+		}
+		bitDepthY := 8 + int(sps.BitDepthLumaMinus8)
+		bitDepthC := 8 + int(sps.BitDepthChromaMinus8)
+
+		sc := &SliceContext{
+			MBWidth:              mbWidth,
+			MBHeight:             mbHeight,
+			TotalMBs:             totalMBs,
+			MBs:                  getMBs(totalMBs),
+			Transform8x8ModeFlag: pps.Transform8x8ModeFlag,
+			ChromaArrayType:      chromaArrayType,
+			BitDepthY:            bitDepthY,
+			BitDepthC:            bitDepthC,
+			ChromaQpIndexOffset:  int(pps.ChromaQpIndexOffset),
+			TraceMBCMP:           d.TraceMBCMP,
+		}
+
+		d.curSliceCtx = sc
+		d.curFrame = f
+		d.curSPS = sps
+		d.curPPS = pps
+		d.curDeblockAlpha = int(sh.SliceAlphaC0OffsetDiv2) * 2
+		d.curDeblockBeta = int(sh.SliceBetaOffsetDiv2) * 2
+		d.curDisableDeblock = sh.DisableDeblockingFilterIDC
+		d.decodedMBCount = 0
+	} else {
+		// Subsequent slice
+		if d.curSliceCtx == nil || firstMB != d.decodedMBCount {
+			d.Reset()
+			return nil, nil
+		}
+	}
+
+	sliceQPY := 26 + int(pps.PicInitQpMinus26) + int(sh.SliceQPDelta)
+	sc := d.curSliceCtx
+
 	if pps.EntropyCodingModeFlag {
 		sliceData := removeEBSPPrevention(nalu[sh.Size:])
-		var err2 error
-		sc, err2 = DecodeSliceData(sliceData, sliceQPY, mbWidth, mbHeight,
-			pps.Transform8x8ModeFlag, chromaArrayType, bitDepthY, bitDepthC,
-			int(pps.ChromaQpIndexOffset), d.TraceMBCMP)
+		lastMB, err2 := decodeSliceCABAC(sc, sliceData, sliceQPY, firstMB)
 		if err2 != nil {
+			d.Reset()
 			return nil, fmt.Errorf("decode slice data (CABAC): %w", err2)
 		}
+		d.decodedMBCount = lastMB
 	} else {
 		fullData := removeEBSPPrevention(nalu)
 		br := NewBitReader(fullData)
@@ -225,42 +294,36 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 			RedundantPicCntPresentFlag:            pps.RedundantPicCntPresentFlag,
 		})
 		if err != nil {
+			d.Reset()
 			return nil, fmt.Errorf("skip slice header (CAVLC): %w", err)
 		}
 
-		var err2 error
-		sc, err2 = DecodeSliceDataCAVLC(br, sliceQPY, mbWidth, mbHeight,
-			pps.Transform8x8ModeFlag, chromaArrayType, bitDepthY, bitDepthC,
-			int(pps.ChromaQpIndexOffset), d.TraceMBCMP)
+		lastMB, err2 := decodeSliceCAVLC(sc, br, sliceQPY, firstMB)
 		if err2 != nil {
+			d.Reset()
 			return nil, fmt.Errorf("decode slice data (CAVLC): %w", err2)
 		}
+		d.decodedMBCount = lastMB
 	}
 
-	f := NewFrame(width, height)
-
-	if sps.VUI != nil {
-		if sps.VUI.ColourDescriptionFlag {
-			f.ColorDescriptionValid = true
-			f.MatrixCoefficients = sps.VUI.MatrixCoefficients
-		}
-		f.VideoFullRangeFlag = sps.VUI.VideoFullRangeFlag
+	if d.decodedMBCount < sc.TotalMBs {
+		return nil, nil
 	}
 
+	f := d.curFrame
 	err = reconstructFrame(sc, f, sps, pps)
 	if err != nil {
-		putMBs(sc.MBs)
+		d.Reset()
 		return nil, fmt.Errorf("reconstruct frame: %w", err)
 	}
 
-	if sh.DisableDeblockingFilterIDC != 1 && !d.SkipDeblock {
-		Deblock(f, sc,
-			int(sh.SliceAlphaC0OffsetDiv2)*2,
-			int(sh.SliceBetaOffsetDiv2)*2)
+	if d.curDisableDeblock != 1 && !d.SkipDeblock {
+		Deblock(f, sc, d.curDeblockAlpha, d.curDeblockBeta)
 	}
-	putMBs(sc.MBs)
 
-	return f, nil
+	outFrame := f
+	d.Reset()
+	return outFrame, nil
 }
 
 func removeEBSPPrevention(data []byte) []byte {

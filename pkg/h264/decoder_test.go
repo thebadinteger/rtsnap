@@ -151,6 +151,43 @@ func TestDecodeFrameSizeLimit(t *testing.T) {
 	}
 }
 
+func TestDecoderResetAndOrphanedSlice(t *testing.T) {
+	data, err := os.ReadFile("../../tests/testdata/black_idr.264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+	nalus := ExtractNalusFromByteStream(data)
+
+	d := New()
+	var spsPPS [][]byte
+	var idr []byte
+	for _, n := range nalus {
+		switch NaluType(n[0] & 0x1f) {
+		case NALU_SPS, NALU_PPS:
+			spsPPS = append(spsPPS, n)
+		case NALU_IDR:
+			idr = n
+		}
+	}
+	f, err := d.DecodeNALUs(spsPPS)
+	if err != nil {
+		t.Fatalf("unexpected error feeding params: %v", err)
+	}
+	if f != nil {
+		t.Fatalf("expected nil frame for params only, got %v", f)
+	}
+
+	d.Reset()
+
+	f, err = d.DecodeNALUs([][]byte{idr})
+	if err != nil {
+		t.Fatalf("failed to decode IDR: %v", err)
+	}
+	if f == nil {
+		t.Fatal("expected non-nil frame")
+	}
+}
+
 func FuzzH264DecodeNALUs(f *testing.F) {
 	data, err := os.ReadFile("../../tests/testdata/black_idr.264")
 	if err != nil {
