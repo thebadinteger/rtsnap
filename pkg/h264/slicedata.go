@@ -36,6 +36,8 @@ func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB 
 	sc.Cabac = dec
 	sc.Ctx = (*[1024]CtxState)(&models)
 	sc.QPY = sliceQPY
+	sc.SliceStartMB = firstMB
+	sc.PrevMBQPDeltaNonZero = false
 
 	lastMB := firstMB
 	for mbIdx := firstMB; mbIdx < sc.TotalMBs; mbIdx++ {
@@ -46,10 +48,17 @@ func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB 
 		}
 		lastMB = mbIdx + 1
 
+		if dec.Overread() {
+			return lastMB, fmt.Errorf("cabac: unexpected end of slice data at mb %d", mbIdx)
+		}
+
 		if mbIdx < sc.TotalMBs-1 {
 			endOfSlice := dec.DecodeTerminate()
 			if endOfSlice == 1 {
 				break
+			}
+			if dec.Overread() {
+				return lastMB, fmt.Errorf("cabac: unexpected end of slice data at mb %d", mbIdx)
 			}
 		}
 	}
@@ -253,6 +262,7 @@ func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int
 	sc.IsCAVLC = true
 	sc.Br = br
 	sc.QPY = sliceQPY
+	sc.SliceStartMB = firstMB
 
 	lastMB := firstMB
 	for mbIdx := firstMB; mbIdx < sc.TotalMBs; mbIdx++ {
@@ -262,6 +272,10 @@ func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int
 			return lastMB, fmt.Errorf("mb %d: %w", mbIdx, err)
 		}
 		lastMB = mbIdx + 1
+
+		if !br.HasMoreRBSPData() {
+			break
+		}
 	}
 
 	return lastMB, nil

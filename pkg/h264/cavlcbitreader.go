@@ -226,3 +226,24 @@ func (r *BitReader) SkipSliceHeaderIDR(p SliceHeaderParams) error {
 
 	return nil
 }
+
+func (r *BitReader) HasMoreRBSPData() bool {
+	if r.bytePos >= len(r.data) {
+		return false
+	}
+	lastByte := len(r.data) - 1
+	for lastByte >= r.bytePos && r.data[lastByte] == 0 {
+		lastByte--
+	}
+	if lastByte < r.bytePos {
+		return false
+	}
+	b := r.data[lastByte]
+	stopBitPos := 0
+	for (b & (1 << stopBitPos)) == 0 {
+		stopBitPos++
+	}
+	stopBitIndex := lastByte*8 + (7 - stopBitPos)
+	currentBitIndex := r.bytePos*8 + int(r.bitPos)
+	return currentBitIndex < stopBitIndex
+}

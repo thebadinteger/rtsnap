@@ -66,6 +66,7 @@ type SliceContext struct {
 	ChromaQpIndexOffset  int
 
 	PrevMBQPDeltaNonZero bool
+	SliceStartMB         int
 
 	TraceMBCMP bool
 
@@ -76,14 +77,14 @@ type SliceContext struct {
 
 func (sc *SliceContext) MBAvailA(mbIdx int) *MBData {
 	mbX := mbIdx % sc.MBWidth
-	if mbX == 0 {
+	if mbX == 0 || mbIdx-1 < sc.SliceStartMB {
 		return nil
 	}
 	return &sc.MBs[mbIdx-1]
 }
 
 func (sc *SliceContext) MBAvailB(mbIdx int) *MBData {
-	if mbIdx < sc.MBWidth {
+	if mbIdx < sc.MBWidth || mbIdx-sc.MBWidth < sc.SliceStartMB {
 		return nil
 	}
 	return &sc.MBs[mbIdx-sc.MBWidth]

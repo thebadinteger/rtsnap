@@ -159,6 +159,7 @@ func TestDecoderResetAndOrphanedSlice(t *testing.T) {
 	nalus := ExtractNalusFromByteStream(data)
 
 	d := New()
+	// feed SPS and PPS
 	var spsPPS [][]byte
 	var idr []byte
 	for _, n := range nalus {
@@ -185,6 +186,34 @@ func TestDecoderResetAndOrphanedSlice(t *testing.T) {
 	}
 	if f == nil {
 		t.Fatal("expected non-nil frame")
+	}
+}
+
+func TestTruncatedSliceDoesNotReturnFrame(t *testing.T) {
+	data, err := os.ReadFile("../../tests/testdata/testpic_idr.264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+	nalus := ExtractNalusFromByteStream(data)
+	d := New()
+	// pass SPS and PPS
+	_, _ = d.DecodeNALUs([][]byte{nalus[0], nalus[1]})
+
+	truncatedIDR := nalus[3][:500]
+	f, err := d.DecodeNALUs([][]byte{truncatedIDR})
+	if f != nil {
+		t.Fatalf("expected nil frame for truncated slice, got %v", f)
+	}
+	if err == nil {
+		t.Fatal("expected error for truncated slice, got nil")
+	}
+
+	f, err = d.DecodeNALUs([][]byte{nalus[3]})
+	if err != nil {
+		t.Fatalf("failed to decode valid IDR after truncated slice: %v", err)
+	}
+	if f == nil {
+		t.Fatal("expected non-nil frame for valid IDR")
 	}
 }
 

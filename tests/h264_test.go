@@ -358,3 +358,67 @@ func TestH264SnapshotJPEG(t *testing.T) {
 		t.Fatal("expected non-nil decoded image")
 	}
 }
+
+func TestH264TruncatedFrameRecovery(t *testing.T) {
+	data, err := os.ReadFile("testdata/testpic_idr.264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	var sps, pps, idr []byte
+	for _, nalu := range h264.ExtractNalusFromByteStream(data) {
+		switch h264.NaluType(nalu[0] & 0x1f) {
+		case h264.NALU_SPS:
+			if sps == nil {
+				sps = nalu
+			}
+		case h264.NALU_PPS:
+			if pps == nil {
+				pps = nalu
+			}
+		case h264.NALU_IDR:
+			if idr == nil {
+				idr = nalu
+			}
+		}
+	}
+	if sps == nil || pps == nil || idr == nil {
+		t.Fatal("fixture lacks sps/pps/idr units")
+	}
+
+	mk := func(seq byte, mark bool, payload []byte) []byte {
+		hdr := []byte{0x80, 0x60, 0x00, seq, 0x00, 0x00, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44}
+		if mark {
+			hdr[1] |= 0x80
+		}
+		return append(hdr, payload...)
+	}
+
+	truncatedIDR := idr[:300]
+	pkts := [][]byte{
+		mk(1, false, sps),
+		mk(2, false, pps),
+		mk(3, true, truncatedIDR), // corrupt truncated frame
+		mk(4, true, idr),          // subsequent healthy full frame
+	}
+
+	server, err := newMockServer(&mockServer{
+		codec:   "h264",
+		packets: pkts,
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, server.URL())
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil image")
+	}
+}

@@ -13,6 +13,11 @@ type CabacDecoder struct {
 	data       []byte
 	pos        int
 	bitsLeft   int
+	overread   bool
+}
+
+func (d *CabacDecoder) Overread() bool {
+	return d.overread
 }
 
 func NewCabacDecoder(data []byte) (*CabacDecoder, error) {
@@ -37,6 +42,7 @@ func (d *CabacDecoder) readBit() uint16 {
 			d.bitsLeft = 8
 			d.pos++
 		} else {
+			d.overread = true
 			return 0
 		}
 	}
