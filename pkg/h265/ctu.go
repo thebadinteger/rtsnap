@@ -1,6 +1,9 @@
 package h265
 
-import "slices"
+import (
+	"slices"
+	"sync"
+)
 
 const (
 	partMode2Nx2N = iota
@@ -109,6 +112,7 @@ type ctuDecoder struct {
 	ctbSliceAddr   []int32
 	sliceLF        []bool
 	ctbSlice       []int32
+	ctbDecoded     []bool
 	slices         []*sliceHeader
 	depSliceAddrRs int
 
@@ -194,6 +198,7 @@ func newCTUDecoder(prev *ctuDecoder, s *sps, p *pps, sh *sliceHeader, pic *Pictu
 
 		ctbSliceAddr: reuse(d.ctbSliceAddr, ctbs),
 		ctbSlice:     reuse(d.ctbSlice, ctbs),
+		ctbDecoded:   reuse(d.ctbDecoded, ctbs),
 		sao:          reuse(d.sao, ctbs),
 		sliceLF:      reuse(d.sliceLF, ctbs),
 
@@ -254,6 +259,44 @@ func keep[T any](b []T, n int) []T {
 	}
 
 	return b[:n]
+}
+
+// scratch buffers outlive decoders so new snapshots start warm
+var ctuPool sync.Pool
+
+func ctuPoolGet() *ctuDecoder {
+	if v := ctuPool.Get(); v != nil {
+		return v.(*ctuDecoder)
+	}
+
+	return nil
+}
+
+func (d *Decoder) ctuScratch() *ctuDecoder {
+	if d.ctuPrev != nil {
+		return d.ctuPrev
+	}
+
+	return ctuPoolGet()
+}
+
+func (d *Decoder) ctuPoolPut() {
+	c := d.ctuPrev
+	if c == nil {
+		return
+	}
+
+	// drop stream references so parked buffers cannot pin a picture
+	c.s, c.p, c.sh, c.pic = nil, nil, nil, nil
+	c.refPics[0], c.refPics[1] = nil, nil
+	c.colPic = nil
+	c.slices = nil
+	c.saoType, c.eoClass = [3]int{}, [2]int{}
+	c.c.data = nil
+
+	ctuPool.Put(c)
+
+	d.ctuPrev = nil
 }
 
 func reuse[T any](b []T, n int) []T {

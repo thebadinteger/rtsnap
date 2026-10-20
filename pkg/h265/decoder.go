@@ -1,11 +1,10 @@
-
 package h265
 
 type Decoder struct {
 	SkipLoop bool
-	vps map[uint8]*vps
-	sps map[uint32]*sps
-	pps map[uint32]*pps
+	vps      map[uint8]*vps
+	sps      map[uint32]*sps
+	pps      map[uint32]*pps
 
 	cur      *Picture
 	curOut   bool
@@ -14,7 +13,6 @@ type Decoder struct {
 	prevSlic *sliceHeader
 
 	dpb            []dpbPicture
-	pool           picPool
 	threads        int
 	frameSizeLimit int
 	poc            pocState
@@ -31,13 +29,27 @@ type Decoder struct {
 // cap decoded frame size in pixels
 func (d *Decoder) FrameSizeLimit(n int) { d.frameSizeLimit = n }
 
-// reset decoder state but keep buffer pool
+// reset stream state but keep scratch buffers for the next stream
 func (d *Decoder) Reset() {
 	for i := range d.dpb {
 		d.dpb[i].pic.release()
 	}
-	pool := d.pool
-	*d = Decoder{pool: pool}
+
+	scratch := d.ctuPrev
+
+	*d = Decoder{
+		ctuPrev:        scratch,
+		SkipLoop:       d.SkipLoop,
+		threads:        d.threads,
+		frameSizeLimit: d.frameSizeLimit,
+	}
+}
+
+// release scratch buffers back to the shared pool
+func (d *Decoder) Close() {
+	d.Reset()
+
+	d.ctuPoolPut()
 }
 
 // feed single nal unit into decoder
@@ -135,6 +147,14 @@ func (d *Decoder) finishPicture() []*Picture {
 		return nil
 	}
 
+	// drop pictures with missing coding tree units instead of emitting garbage
+	if d.ctu != nil && !d.ctu.complete() {
+		d.cur.release()
+		d.cur, d.ctu = nil, nil
+
+		return nil
+	}
+
 	if d.ctu != nil {
 		d.ctu.storeColMotion()
 		if !d.SkipLoop {
@@ -148,6 +168,17 @@ func (d *Decoder) finishPicture() []*Picture {
 	d.cur, d.ctu = nil, nil
 
 	return d.dpbDrain(false)
+}
+
+// true when every coding tree unit of the picture was decoded
+func (d *ctuDecoder) complete() bool {
+	for _, ok := range d.ctbDecoded {
+		if !ok {
+			return false
+		}
+	}
+
+	return len(d.ctbDecoded) > 0
 }
 
 func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
@@ -244,10 +275,10 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 
 		d.curRPS = rps
 
-		d.cur = newPicture(&d.pool, s)
+		d.cur = newPicture(sharedPool, s)
 		d.cur.POC = int(poc)
 		d.curOut = sh.picOutputFlag
-		d.ctu = newCTUDecoder(d.ctuPrev, s, p, sh, d.cur)
+		d.ctu = newCTUDecoder(d.ctuScratch(), s, p, sh, d.cur)
 		d.ctu.threads = d.waveThreads()
 		d.ctuPrev = d.ctu
 		d.ctu.poc = poc
@@ -354,6 +385,7 @@ func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 		if err := d.codingTreeUnit(x, y); err != nil {
 			return err
 		}
+		d.ctbDecoded[rs] = true
 
 		if wpp && rs%w == 1 {
 			d.saved = d.c.state

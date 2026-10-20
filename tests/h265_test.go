@@ -5,6 +5,7 @@ import (
 	"context"
 	"image/jpeg"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -252,5 +253,108 @@ func TestH265GapKeepsParamSets(t *testing.T) {
 	}
 	if img == nil {
 		t.Fatal("expected non-nil image")
+	}
+}
+
+func TestH265RepeatedSnapshotsStable(t *testing.T) {
+	data, err := os.ReadFile("testdata/1080p.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	pkts := makeRTPPacketsH265(splitAnnexBNALBytes(data))
+
+	first := ""
+	for i := range 3 {
+		server, err := newMockServer(&mockServer{
+			codec:   "h265",
+			packets: pkts,
+		})
+		if err != nil {
+			t.Fatalf("newMockServer: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		img, err := rtsnap.Snapshot(ctx, server.URL())
+		cancel()
+		server.Close()
+		if err != nil {
+			t.Fatalf("snapshot %d failed: %v", i, err)
+		}
+
+		got := hashImage(img)
+		if i == 0 {
+			first = got
+			continue
+		}
+		if got != first {
+			t.Fatalf("snapshot %d differs, pooled buffers leaked between decoders", i)
+		}
+	}
+}
+
+func TestH265ConcurrentDecoders(t *testing.T) {
+	data, err := os.ReadFile("testdata/1080p.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	decode := func() (string, error) {
+		var d h265.Decoder
+		defer d.Close()
+
+		var last *h265.Picture
+		for _, nal := range splitAnnexBNALBytes(data) {
+			u, ok := h265.ParseNAL(nal)
+			if !ok {
+				continue
+			}
+			pics, err := d.DecodeNAL(u)
+			if err != nil {
+				return "", err
+			}
+			for _, p := range pics {
+				last = p
+			}
+		}
+		for _, p := range d.Flush() {
+			last = p
+		}
+		if last == nil {
+			return "", nil
+		}
+		got := hashImage(last.Image())
+		last.Release()
+		return got, nil
+	}
+
+	want, err := decode()
+	if err != nil {
+		t.Fatalf("reference decode: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	bad := make(chan string, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 3 {
+				got, err := decode()
+				if err != nil {
+					bad <- err.Error()
+					return
+				}
+				if got != want {
+					bad <- "picture mismatch under concurrent decoders"
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(bad)
+	for e := range bad {
+		t.Fatal(e)
 	}
 }

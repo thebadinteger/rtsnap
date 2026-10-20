@@ -234,9 +234,14 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	out = append(out, 0xFF, 0xD8)
 
 	if len(d.quantTables) > 0 {
-		dqtLen := 2 + len(d.quantTables)*(1+64)
+		tables := d.quantTables
+		if len(tables) == 1 {
+			tables = [][]byte{tables[0], tables[0]}
+		}
+
+		dqtLen := 2 + len(tables)*(1+64)
 		out = append(out, 0xFF, 0xDB, byte(dqtLen>>8), byte(dqtLen))
-		for id, tbl := range d.quantTables {
+		for id, tbl := range tables {
 			out = append(out, byte(id))
 			out = append(out, tbl...)
 		}

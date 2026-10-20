@@ -66,33 +66,6 @@ func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB 
 	return lastMB, nil
 }
 
-func DecodeSliceData(sliceData []byte, sliceQPY int, mbWidth, mbHeight int,
-	transform8x8ModeFlag bool, chromaArrayType int,
-	bitDepthY, bitDepthC int, chromaQpIndexOffset int, traceMBCMP bool) (*SliceContext, error) {
-
-	totalMBs := mbWidth * mbHeight
-	sc := &SliceContext{
-		MBWidth:              mbWidth,
-		MBHeight:             mbHeight,
-		TotalMBs:             totalMBs,
-		QPY:                  sliceQPY,
-		MBs:                  getMBs(totalMBs),
-		Transform8x8ModeFlag: transform8x8ModeFlag,
-		ChromaArrayType:      chromaArrayType,
-		BitDepthY:            bitDepthY,
-		BitDepthC:            bitDepthC,
-		ChromaQpIndexOffset:  chromaQpIndexOffset,
-		TraceMBCMP:           traceMBCMP,
-	}
-
-	for i := range sc.MBs {
-		sc.MBs[i].QPY = sliceQPY
-	}
-
-	_, err := decodeSliceCABAC(sc, sliceData, sliceQPY, 0)
-	return sc, err
-}
-
 func decodeMacroblock(sc *SliceContext, mbIdx int) error {
 	mb := &sc.MBs[mbIdx]
 
@@ -279,36 +252,6 @@ func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int
 	}
 
 	return lastMB, nil
-}
-
-func DecodeSliceDataCAVLC(br *BitReader, sliceQPY int, mbWidth, mbHeight int,
-	transform8x8ModeFlag bool, chromaArrayType int,
-	bitDepthY, bitDepthC int, chromaQpIndexOffset int, traceMBCMP bool) (*SliceContext, error) {
-
-	totalMBs := mbWidth * mbHeight
-
-	sc := &SliceContext{
-		IsCAVLC:              true,
-		Br:                   br,
-		MBWidth:              mbWidth,
-		MBHeight:             mbHeight,
-		TotalMBs:             totalMBs,
-		QPY:                  sliceQPY,
-		MBs:                  getMBs(totalMBs),
-		Transform8x8ModeFlag: transform8x8ModeFlag,
-		ChromaArrayType:      chromaArrayType,
-		BitDepthY:            bitDepthY,
-		BitDepthC:            bitDepthC,
-		ChromaQpIndexOffset:  chromaQpIndexOffset,
-		TraceMBCMP:           traceMBCMP,
-	}
-
-	for i := range sc.MBs {
-		sc.MBs[i].QPY = sliceQPY
-	}
-
-	_, err := decodeSliceCAVLC(sc, br, sliceQPY, 0)
-	return sc, err
 }
 
 func decodeMacroblockCAVLC(sc *SliceContext, mbIdx int) error {

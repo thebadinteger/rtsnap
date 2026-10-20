@@ -93,7 +93,7 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 }
 
 func (a *Auth) hash(data string) string {
-	if a.Algo == "SHA-256" {
+	if strings.HasPrefix(a.Algo, "SHA-256") {
 		h := sha256.Sum256([]byte(data))
 		return hex.EncodeToString(h[:])
 	}
@@ -114,10 +114,12 @@ func (a *Auth) Generate(method, uri string) string {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
 	}
 
-	ha1 := a.hash(a.Username + ":" + a.Realm + ":" + a.Password)
-	ha2 := a.hash(method + ":" + uri)
+	var parts []string
+	parts = append(parts, fmt.Sprintf(`username="%s"`, a.Username))
+	parts = append(parts, fmt.Sprintf(`realm="%s"`, a.Realm))
+	parts = append(parts, fmt.Sprintf(`nonce="%s"`, a.Nonce))
+	parts = append(parts, fmt.Sprintf(`uri="%s"`, uri))
 
-	var response string
 	hasQop := false
 	for _, q := range strings.Split(a.Qop, ",") {
 		if strings.TrimSpace(q) == "auth" {
@@ -126,18 +128,20 @@ func (a *Auth) Generate(method, uri string) string {
 		}
 	}
 
-	var parts []string
-	parts = append(parts, fmt.Sprintf(`username="%s"`, a.Username))
-	parts = append(parts, fmt.Sprintf(`realm="%s"`, a.Realm))
-	parts = append(parts, fmt.Sprintf(`nonce="%s"`, a.Nonce))
-	parts = append(parts, fmt.Sprintf(`uri="%s"`, uri))
+	if a.Cnonce == "" {
+		a.Cnonce = randomCnonce()
+	}
 
+	ha1 := a.hash(a.Username + ":" + a.Realm + ":" + a.Password)
+	if strings.HasSuffix(strings.ToLower(a.Algo), "-sess") {
+		ha1 = a.hash(ha1 + ":" + a.Nonce + ":" + a.Cnonce)
+	}
+	ha2 := a.hash(method + ":" + uri)
+
+	var response string
 	if hasQop {
 		a.NC++
 		nc := fmt.Sprintf("%08x", a.NC)
-		if a.Cnonce == "" {
-			a.Cnonce = randomCnonce()
-		}
 		response = a.hash(ha1 + ":" + a.Nonce + ":" + nc + ":" + a.Cnonce + ":auth:" + ha2)
 		parts = append(parts, `qop=auth`)
 		parts = append(parts, fmt.Sprintf(`nc=%s`, nc))

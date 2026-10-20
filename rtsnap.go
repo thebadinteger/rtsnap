@@ -185,6 +185,22 @@ func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, er
 	return info, nil
 }
 
+// rtp sequence state shared by capture loops
+type seqTracker struct {
+	last uint16
+	set  bool
+}
+
+// returns false for duplicate or late packets
+func (s *seqTracker) accept(seq uint16) (gap, ok bool) {
+	if s.set && seq == s.last {
+		return false, false
+	}
+	gap = s.set && seq != s.last+1
+	s.last, s.set = seq, true
+	return gap, true
+}
+
 // read mjpeg packets until full frame
 func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error) {
 	var depack *rtp.MJPEGDepacketizer
@@ -193,8 +209,7 @@ func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error)
 		depack = rtp.NewMJPEGDepacketizer()
 	}
 	reset()
-	var lastSeq uint16
-	var seqSet bool
+	var seq seqTracker
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -210,14 +225,9 @@ func captureMJPEG(ctx context.Context, client *rtsp.Client) (image.Image, error)
 			continue
 		}
 
-		if seqSet && pkt.SequenceNumber == lastSeq {
+		if _, ok := seq.accept(pkt.SequenceNumber); !ok {
 			continue
 		}
-		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
-			reset()
-		}
-		lastSeq = pkt.SequenceNumber
-		seqSet = true
 
 		jpegBytes, err := depack.Decode(&pkt)
 		if err != nil {
@@ -241,8 +251,7 @@ func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
 		depack = rtp.NewMJPEGDepacketizer()
 	}
 	reset()
-	var lastSeq uint16
-	var seqSet bool
+	var seq seqTracker
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -258,14 +267,9 @@ func captureMJPEGRaw(ctx context.Context, client *rtsp.Client) ([]byte, error) {
 			continue
 		}
 
-		if seqSet && pkt.SequenceNumber == lastSeq {
+		if _, ok := seq.accept(pkt.SequenceNumber); !ok {
 			continue
 		}
-		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
-			reset()
-		}
-		lastSeq = pkt.SequenceNumber
-		seqSet = true
 
 		raw, err := depack.Decode(&pkt)
 		if err != nil {
@@ -293,8 +297,7 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	}
 	feedParams()
 
-	var lastSeq uint16
-	var seqSet bool
+	var seq seqTracker
 
 	for {
 		frame, err := client.ReadFrame(ctx)
@@ -310,16 +313,15 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			continue
 		}
 
-		if seqSet && pkt.SequenceNumber == lastSeq {
+		gap, ok := seq.accept(pkt.SequenceNumber)
+		if !ok {
 			continue
 		}
-		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
+		if gap {
 			depack = rtp.NewH264Depacketizer()
 			dec.Reset()
 			feedParams()
 		}
-		lastSeq = pkt.SequenceNumber
-		seqSet = true
 
 		nalus, err := depack.Decode(&pkt)
 		if err != nil {
@@ -338,13 +340,24 @@ func captureH264(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	}
 }
 
+// keep newest parameter set of each type
+func stashParam(stash []h265.NALUnit, u h265.NALUnit) []h265.NALUnit {
+	for i := range stash {
+		if stash[i].Type == u.Type {
+			stash[i] = u
+			return stash
+		}
+	}
+	return append(stash, u)
+}
+
 // read h265 packets until first decodable frame
 func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Image, error) {
 	var depack *rtp.H265Depacketizer
 	var dec h265.Decoder
+	defer dec.Close()
 	var stash []h265.NALUnit
-	var lastSeq uint16
-	var seqSet bool
+	var seq seqTracker
 	var seenIRAP bool
 	reset := func() {
 		seenIRAP = false
@@ -387,14 +400,13 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			continue
 		}
 
-		if seqSet && pkt.SequenceNumber == lastSeq {
+		gap, ok := seq.accept(pkt.SequenceNumber)
+		if !ok {
 			continue
 		}
-		if seqSet && pkt.SequenceNumber != uint16(lastSeq+1) {
+		if gap {
 			reset()
 		}
-		lastSeq = pkt.SequenceNumber
-		seqSet = true
 
 		nalus, err := depack.Decode(&pkt)
 		if err != nil {
@@ -409,7 +421,7 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 
 			switch u.Type {
 			case h265.NALVPS, h265.NALSPS, h265.NALPPS:
-				stash = append(stash, u)
+				stash = stashParam(stash, u)
 			}
 
 			firstRAP := u.Type.IsIRAP() && !seenIRAP

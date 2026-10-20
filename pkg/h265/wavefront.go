@@ -191,6 +191,7 @@ func (d *ctuDecoder) decodeWaveRow(nal NALUnit, sh *sliceHeader, starts []int, v
 		if err := d.codingTreeUnit(col<<d.s.ctbLog2SizeY, row<<d.s.ctbLog2SizeY); err != nil {
 			return err
 		}
+		d.ctbDecoded[rs] = true
 
 		if col == 1 {
 			v.saveCtx(k, d.c.state, 2)

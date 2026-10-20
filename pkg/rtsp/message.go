@@ -14,6 +14,7 @@ const (
 	magicByte       = 0x24
 	maxResponseBody = 16 << 20 // 16mb cap on response body
 	maxHeaderLines  = 128
+	maxHeaderLine   = 8 << 10 // single line cap
 )
 
 type Request struct {
@@ -65,10 +66,25 @@ func (r *Response) Header(key string) string {
 	return ""
 }
 
+// read one crlf line with a hard size cap
+func readLine(br *bufio.Reader) (string, error) {
+	line, err := br.ReadSlice('\n')
+	if err == bufio.ErrBufferFull {
+		return "", fmt.Errorf("response line exceeds %d bytes", maxHeaderLine)
+	}
+	if err != nil {
+		return "", err
+	}
+	if len(line) > maxHeaderLine {
+		return "", fmt.Errorf("response line exceeds %d bytes", maxHeaderLine)
+	}
+	return string(line), nil
+}
+
 // parse status line and headers
 func readResponse(br *bufio.Reader) (*Response, string, error) {
 	var raw strings.Builder
-	line, err := br.ReadString('\n')
+	line, err := readLine(br)
 	if err != nil {
 		return nil, "", err
 	}
@@ -92,7 +108,7 @@ func readResponse(br *bufio.Reader) (*Response, string, error) {
 		if n > maxHeaderLines {
 			return nil, "", fmt.Errorf("too many response headers")
 		}
-		hline, err := br.ReadString('\n')
+		hline, err := readLine(br)
 		if err != nil {
 			return nil, "", err
 		}

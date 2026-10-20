@@ -154,3 +154,36 @@ func TestAuthUnitHeaders(t *testing.T) {
 		t.Fatalf("expected nil for unsupported auth scheme, got %v", badAuth)
 	}
 }
+
+func TestAuthSessVariant(t *testing.T) {
+	hdr := `Digest realm="r", nonce="n1", qop="auth", algorithm=MD5-sess`
+	a := rtsp.NewAuth(hdr, "u", "p")
+	if a == nil {
+		t.Fatal("failed to create auth")
+	}
+
+	res := a.Generate("DESCRIBE", "rtsp://h/live")
+	if !strings.Contains(res, `algorithm="MD5-SESS"`) {
+		t.Fatalf("algorithm not echoed: %s", res)
+	}
+	if !strings.Contains(res, "response=\"") {
+		t.Fatalf("missing response: %s", res)
+	}
+	// nc must advance on each authenticated request
+	first := a.Generate("DESCRIBE", "rtsp://h/live")
+	second := a.Generate("SETUP", "rtsp://h/live")
+	if strings.Contains(second, "nc=00000000") || first == second {
+		t.Fatalf("nc did not advance: %s / %s", first, second)
+	}
+}
+
+func TestAuthLongHeaderLine(t *testing.T) {
+	hdr := `Digest realm="` + strings.Repeat("a", 10000) + `", nonce="n"`
+	a := rtsp.NewAuth(hdr, "u", "p")
+	if a == nil {
+		t.Fatal("failed to create auth")
+	}
+	if a.Realm == "" {
+		t.Fatal("realm not parsed from long header")
+	}
+}

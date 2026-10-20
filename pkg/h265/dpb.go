@@ -345,7 +345,7 @@ func (d *Decoder) generateUnavailable(rps *refPicSet, s *sps) {
 			return
 		}
 
-		p := newPicture(&d.pool, s)
+		p := newPicture(sharedPool, s)
 		p.POC = int(poc)
 
 		for cIdx, plane := range [][]uint8{p.Y, p.Cb, p.Cr} {

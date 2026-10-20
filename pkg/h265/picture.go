@@ -2,7 +2,9 @@ package h265
 
 import (
 	"image"
+	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 type Picture struct {
@@ -40,6 +42,9 @@ type Picture struct {
 func (p *Picture) Release() {
 	p.release()
 }
+
+// planes outlive decoders so repeated snapshots reuse them
+var sharedPool = &picPool{}
 
 func (p *Picture) acquire() {
 	if p != nil {
@@ -95,16 +100,32 @@ func (p *Picture) geom() picGeom {
 	}
 }
 
-const picPoolDepth = 8
+const (
+	picPoolDepth  = 4
+	picPoolBudget = 96 << 20
+)
 
 type picPool struct {
-	free map[picGeom][]picBufs
+	mu    sync.Mutex
+	free  map[picGeom][]picBufs
+	bytes int
+}
+
+func (b picBufs) size() int {
+	n := cap(b.y) + cap(b.cb) + cap(b.cr)
+	n += 2 * (cap(b.y16) + cap(b.cb16) + cap(b.cr16))
+	n += cap(b.col) * int(unsafe.Sizeof(colMotion{}))
+
+	return n
 }
 
 func (pl *picPool) get(g picGeom) (picBufs, bool) {
 	if pl == nil {
 		return picBufs{}, false
 	}
+
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
 
 	free := pl.free[g]
 	if len(free) == 0 {
@@ -114,6 +135,7 @@ func (pl *picPool) get(g picGeom) (picBufs, bool) {
 	b := free[len(free)-1]
 	free[len(free)-1] = picBufs{}
 	pl.free[g] = free[:len(free)-1]
+	pl.bytes -= b.size()
 
 	return b, true
 }
@@ -123,13 +145,20 @@ func (pl *picPool) put(g picGeom, b picBufs) {
 		return
 	}
 
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+
 	if pl.free == nil {
 		pl.free = make(map[picGeom][]picBufs)
 	}
 
-	if len(pl.free[g]) < picPoolDepth {
-		pl.free[g] = append(pl.free[g], b)
+	n := b.size()
+	if len(pl.free[g]) >= picPoolDepth || pl.bytes+n > picPoolBudget {
+		return
 	}
+
+	pl.free[g] = append(pl.free[g], b)
+	pl.bytes += n
 }
 
 func newPicture(pool *picPool, s *sps) *Picture {
@@ -299,5 +328,74 @@ func (p *Picture) Image() image.Image {
 		}
 	}
 
+	if p.deep() {
+		return p.downshift(w, h)
+	}
+
 	return nil
+}
+
+// convert deep picture to 8 bit for display
+func (p *Picture) downshift(w, h int) image.Image {
+	shift := func(depth int) int {
+		if depth > 8 {
+			return depth - 8
+		}
+
+		return 0
+	}
+
+	to8 := func(plane []uint16, stride, width, height, offX, offY, sh int) []uint8 {
+		out := make([]uint8, width*height)
+
+		for y := range height {
+			row := plane[(offY+y)*stride+offX:]
+			dst := out[y*width:]
+
+			for x := range width {
+				dst[x] = uint8(row[x] >> sh)
+			}
+		}
+
+		return out
+	}
+
+	y := to8(p.Y16, p.StrideY, w, h, p.CropX, p.CropY, shift(p.BitDepth))
+
+	if p.ChromaFormat == 0 {
+		return &image.Gray{
+			Pix:    y,
+			Stride: w,
+			Rect:   image.Rect(0, 0, w, h),
+		}
+	}
+
+	sw, sh := 1, 1
+	if p.ChromaFormat == 1 {
+		sw, sh = 2, 2
+	} else if p.ChromaFormat == 2 {
+		sw, sh = 2, 1
+	}
+
+	cw, ch := w/sw, h/sh
+
+	cb := to8(p.Cb16, p.StrideC, cw, ch, p.CropX/sw, p.CropY/sh, shift(p.BitDepthC))
+	cr := to8(p.Cr16, p.StrideC, cw, ch, p.CropX/sw, p.CropY/sh, shift(p.BitDepthC))
+
+	ratio := image.YCbCrSubsampleRatio444
+	if sw == 2 && sh == 2 {
+		ratio = image.YCbCrSubsampleRatio420
+	} else if sw == 2 {
+		ratio = image.YCbCrSubsampleRatio422
+	}
+
+	return &image.YCbCr{
+		Y:              y,
+		Cb:             cb,
+		Cr:             cr,
+		YStride:        w,
+		CStride:        cw,
+		SubsampleRatio: ratio,
+		Rect:           image.Rect(0, 0, w, h),
+	}
 }

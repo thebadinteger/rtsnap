@@ -66,9 +66,19 @@ func Dial(ctx context.Context, rtspURL string, user, pass string, tlsSkipVerify 
 	var d net.Dialer
 	var conn net.Conn
 	if strings.EqualFold(u.Scheme, "rtsps") {
-		conn, err = tls.DialWithDialer(&d, "tcp", host, &tls.Config{
+		raw, err := d.DialContext(ctx, "tcp", host)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to %s: %w", host, err)
+		}
+		tc := tls.Client(raw, &tls.Config{
 			InsecureSkipVerify: tlsSkipVerify,
+			ServerName:         u.Hostname(),
 		})
+		if err := tc.HandshakeContext(ctx); err != nil {
+			_ = raw.Close()
+			return nil, fmt.Errorf("tls handshake with %s: %w", host, err)
+		}
+		conn = tc
 	} else {
 		conn, err = d.DialContext(ctx, "tcp", host)
 	}
@@ -421,7 +431,7 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 			return frame, nil
 		}
 
-		_, err = c.reader.ReadString('\n')
+		_, err = readLine(c.reader)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
