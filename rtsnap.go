@@ -424,7 +424,6 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 				stash = stashParam(stash, u)
 			}
 
-			firstRAP := u.Type.IsIRAP() && !seenIRAP
 			if u.Type.IsIRAP() {
 				seenIRAP = true
 			}
@@ -434,7 +433,7 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 				reset()
 				continue
 			}
-			if seenIRAP && !firstRAP {
+			if seenIRAP {
 				for _, p := range pics {
 					if img := p.Image(); img != nil {
 						return img, nil

@@ -1,5 +1,7 @@
 package h264
 
+import "fmt"
+
 const (
 	MBTypePSkip  = -1
 	MBTypeINxN   = 0
@@ -33,18 +35,23 @@ type MBData struct {
 	CBPChroma           int
 	QPY                 int
 	QPDelta             int
-	Intra16x16DCLevel [16]int32
-	Intra16x16ACLevel [16][15]int32
-	LumaLevel4x4      [16][16]int32
-	LumaLevel8x8      [4][64]int32
-	ChromaDCLevel     [2][4]int32
-	ChromaACLevel     [2][4][15]int32
+	Intra16x16DCLevel   [16]int32
+	Intra16x16ACLevel   [16][15]int32
+	LumaLevel4x4        [16][16]int32
+	LumaLevel8x8        [4][64]int32
+	ChromaDCLevel       [2][4]int32
+	ChromaACLevel       [2][4][15]int32
 
 	CodedBlockFlag [6][16]uint8
 
 	NzCoeffLuma   [16]int
 	NzCoeffChroma [8]int
 	TotalCoeff    [24]int
+
+	SliceStart   int
+	DeblockIDC   uint32
+	DeblockAlpha int
+	DeblockBeta  int
 }
 
 type SliceContext struct {
@@ -67,6 +74,9 @@ type SliceContext struct {
 
 	PrevMBQPDeltaNonZero bool
 	SliceStartMB         int
+	DeblockIDC           uint32
+	DeblockAlpha         int
+	DeblockBeta          int
 
 	TraceMBCMP bool
 
@@ -88,4 +98,19 @@ func (sc *SliceContext) MBAvailB(mbIdx int) *MBData {
 		return nil
 	}
 	return &sc.MBs[mbIdx-sc.MBWidth]
+}
+
+func (sc *SliceContext) applyQPDelta(mb *MBData, delta int) error {
+	qpBdOffsetY := 6 * (sc.BitDepthY - 8)
+	half := qpBdOffsetY / 2
+	if delta < -26-half || delta > 25+half {
+		return fmt.Errorf("mb_qp_delta %d out of range", delta)
+	}
+
+	mb.QPDelta = delta
+	qpRange := 52 + qpBdOffsetY
+	mb.QPY = ((sc.QPY + delta + qpRange + 2*qpBdOffsetY) % qpRange) - qpBdOffsetY
+	sc.QPY = mb.QPY
+
+	return nil
 }

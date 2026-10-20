@@ -42,6 +42,10 @@ func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB 
 	lastMB := firstMB
 	for mbIdx := firstMB; mbIdx < sc.TotalMBs; mbIdx++ {
 		sc.MBs[mbIdx].QPY = sliceQPY
+		sc.MBs[mbIdx].SliceStart = firstMB
+		sc.MBs[mbIdx].DeblockIDC = sc.DeblockIDC
+		sc.MBs[mbIdx].DeblockAlpha = sc.DeblockAlpha
+		sc.MBs[mbIdx].DeblockBeta = sc.DeblockBeta
 		err := decodeMacroblock(sc, mbIdx)
 		if err != nil {
 			return lastMB, fmt.Errorf("mb %d: %w", mbIdx, err)
@@ -126,12 +130,10 @@ func decodeMacroblock(sc *SliceContext, mbIdx int) error {
 	}
 
 	if mb.CBPLuma > 0 || mb.CBPChroma > 0 || (mb.MBType >= 1 && mb.MBType <= 24) {
-		mb.QPDelta = DecodeQPDelta(sc)
-		qpBdOffsetY := 6 * (sc.BitDepthY - 8)
-		qpRange := 52 + qpBdOffsetY
-		mb.QPY = ((sc.QPY + mb.QPDelta + qpRange + 2*qpBdOffsetY) % qpRange) - qpBdOffsetY
+		if err := sc.applyQPDelta(mb, DecodeQPDelta(sc)); err != nil {
+			return err
+		}
 		sc.PrevMBQPDeltaNonZero = mb.QPDelta != 0
-		sc.QPY = mb.QPY
 	} else {
 		sc.PrevMBQPDeltaNonZero = false
 		mb.QPY = sc.QPY
@@ -240,6 +242,10 @@ func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int
 	lastMB := firstMB
 	for mbIdx := firstMB; mbIdx < sc.TotalMBs; mbIdx++ {
 		sc.MBs[mbIdx].QPY = sliceQPY
+		sc.MBs[mbIdx].SliceStart = firstMB
+		sc.MBs[mbIdx].DeblockIDC = sc.DeblockIDC
+		sc.MBs[mbIdx].DeblockAlpha = sc.DeblockAlpha
+		sc.MBs[mbIdx].DeblockBeta = sc.DeblockBeta
 		err := decodeMacroblockCAVLC(sc, mbIdx)
 		if err != nil {
 			return lastMB, fmt.Errorf("mb %d: %w", mbIdx, err)
@@ -346,11 +352,9 @@ func decodeMacroblockCAVLC(sc *SliceContext, mbIdx int) error {
 		if err != nil {
 			return err
 		}
-		mb.QPDelta = qpDelta
-		qpBdOffsetY := 6 * (sc.BitDepthY - 8)
-		qpRange := 52 + qpBdOffsetY
-		mb.QPY = ((sc.QPY + mb.QPDelta + qpRange + 2*qpBdOffsetY) % qpRange) - qpBdOffsetY
-		sc.QPY = mb.QPY
+		if err := sc.applyQPDelta(mb, qpDelta); err != nil {
+			return err
+		}
 	} else {
 		mb.QPY = sc.QPY
 	}

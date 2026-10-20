@@ -102,12 +102,13 @@ func (p *Picture) geom() picGeom {
 
 const (
 	picPoolDepth  = 4
-	picPoolBudget = 96 << 20
+	picPoolBudget = 128 << 20
 )
 
 type picPool struct {
 	mu    sync.Mutex
 	free  map[picGeom][]picBufs
+	sizes map[picGeom]int
 	bytes int
 }
 
@@ -135,7 +136,12 @@ func (pl *picPool) get(g picGeom) (picBufs, bool) {
 	b := free[len(free)-1]
 	free[len(free)-1] = picBufs{}
 	pl.free[g] = free[:len(free)-1]
-	pl.bytes -= b.size()
+	pl.bytes -= pl.sizes[g]
+
+	if len(pl.free[g]) == 0 {
+		delete(pl.free, g)
+		delete(pl.sizes, g)
+	}
 
 	return b, true
 }
@@ -150,14 +156,45 @@ func (pl *picPool) put(g picGeom, b picBufs) {
 
 	if pl.free == nil {
 		pl.free = make(map[picGeom][]picBufs)
+		pl.sizes = make(map[picGeom]int)
 	}
 
 	n := b.size()
-	if len(pl.free[g]) >= picPoolDepth || pl.bytes+n > picPoolBudget {
+	if len(pl.free[g]) >= picPoolDepth {
 		return
 	}
 
+	for pl.bytes+n > picPoolBudget {
+		victim := picGeom{}
+		worst := 0
+
+		for og := range pl.free {
+			if og == g {
+				continue
+			}
+
+			if s := pl.sizes[og]; s > worst {
+				victim, worst = og, s
+			}
+		}
+
+		if worst == 0 {
+			return
+		}
+
+		bufs := pl.free[victim]
+		bufs[len(bufs)-1] = picBufs{}
+		pl.free[victim] = bufs[:len(bufs)-1]
+		pl.bytes -= pl.sizes[victim]
+
+		if len(pl.free[victim]) == 0 {
+			delete(pl.free, victim)
+			delete(pl.sizes, victim)
+		}
+	}
+
 	pl.free[g] = append(pl.free[g], b)
+	pl.sizes[g] += n
 	pl.bytes += n
 }
 

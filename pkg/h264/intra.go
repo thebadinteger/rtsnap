@@ -70,6 +70,9 @@ func Predict16x16(mode int, top, left []uint8, topLeft uint8) [16][16]uint8 {
 			}
 		}
 	case Intra16x16Plane:
+		if top == nil || left == nil {
+			break
+		}
 		iH := 0
 		iV := 0
 		for x := range 8 {

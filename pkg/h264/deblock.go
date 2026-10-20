@@ -102,21 +102,27 @@ func absInt(x int) int {
 	return x
 }
 
-func Deblock(f *Frame, sc *SliceContext, filterOffsetA, filterOffsetB int) {
-	a := 52 + filterOffsetA
-	b := 52 + filterOffsetB
+func Deblock(f *Frame, sc *SliceContext) {
 	chromaQpOff := sc.ChromaQpIndexOffset
 
 	for mbIdx := 0; mbIdx < sc.TotalMBs; mbIdx++ {
+		mb := &sc.MBs[mbIdx]
+
+		if mb.DeblockIDC == 1 {
+			continue
+		}
+
+		a := 52 + mb.DeblockAlpha
+		b := 52 + mb.DeblockBeta
+
 		mbX := mbIdx % sc.MBWidth
 		mbY := mbIdx / sc.MBWidth
-		mb := &sc.MBs[mbIdx]
 
 		qp := mb.QPY
 		is8x8 := mb.TransformSize8x8
 
-		hasLeft := mbX > 0
-		hasTop := mbY > 0
+		hasLeft := mbX > 0 && (mbIdx-1 >= mb.SliceStart || mb.DeblockIDC != 2)
+		hasTop := mbY > 0 && (mbIdx-sc.MBWidth >= mb.SliceStart || mb.DeblockIDC != 2)
 
 		x0 := mbX * 16
 		y0 := mbY * 16

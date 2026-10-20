@@ -9,14 +9,11 @@ type Decoder struct {
 	SkipDeblock    bool
 	frameSizeLimit int
 
-	curSliceCtx       *SliceContext
-	curFrame          *Frame
-	curSPS            *SPS
-	curPPS            *PPS
-	curDeblockAlpha   int
-	curDeblockBeta    int
-	curDisableDeblock uint32
-	decodedMBCount    int
+	curSliceCtx    *SliceContext
+	curFrame       *Frame
+	curSPS         *SPS
+	curPPS         *PPS
+	decodedMBCount int
 }
 
 // cap decoded frame size in pixels
@@ -203,7 +200,14 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 		return nil, fmt.Errorf("parse slice header: %w", err)
 	}
 
+	if sh.RedundantPicCnt > 0 {
+		return nil, nil
+	}
+
 	pps := d.ppsMap[sh.PicParamID]
+	if pps.NumSliceGroupsMinus1 > 0 {
+		return nil, fmt.Errorf("slice groups not supported")
+	}
 	sps := d.spsMap[pps.SeqParameterSetID]
 
 	width := int(sps.Width)
@@ -257,9 +261,6 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 		d.curFrame = f
 		d.curSPS = sps
 		d.curPPS = pps
-		d.curDeblockAlpha = int(sh.SliceAlphaC0OffsetDiv2) * 2
-		d.curDeblockBeta = int(sh.SliceBetaOffsetDiv2) * 2
-		d.curDisableDeblock = sh.DisableDeblockingFilterIDC
 		d.decodedMBCount = 0
 	} else {
 		// Subsequent slice
@@ -271,6 +272,9 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 
 	sliceQPY := 26 + int(pps.PicInitQpMinus26) + int(sh.SliceQPDelta)
 	sc := d.curSliceCtx
+	sc.DeblockIDC = sh.DisableDeblockingFilterIDC
+	sc.DeblockAlpha = int(sh.SliceAlphaC0OffsetDiv2) * 2
+	sc.DeblockBeta = int(sh.SliceBetaOffsetDiv2) * 2
 
 	if pps.EntropyCodingModeFlag {
 		sliceData := removeEBSPPrevention(nalu[sh.Size:])
@@ -317,8 +321,8 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 		return nil, fmt.Errorf("reconstruct frame: %w", err)
 	}
 
-	if d.curDisableDeblock != 1 && !d.SkipDeblock {
-		Deblock(f, sc, d.curDeblockAlpha, d.curDeblockBeta)
+	if !d.SkipDeblock {
+		Deblock(f, sc)
 	}
 
 	outFrame := f
@@ -383,7 +387,8 @@ func reconstructFrame(sc *SliceContext, f *Frame, sps *SPS, pps *PPS) error {
 
 func reconstructI16x16(sc *SliceContext, f *Frame,
 	mbIdx, mbX, mbY int, mb *MBData, sm *ScalingMatrices) error {
-	top, left, topLeft, hasTop, hasLeft := getLuma16x16Neighbors(f, mbX, mbY)
+	nb := mbNeighbors(sc, mbIdx)
+	top, left, topLeft, hasTop, hasLeft := getLuma16x16Neighbors(f, mbX, mbY, nb)
 	var topSlice, leftSlice []uint8
 	if hasTop {
 		topSlice = top[:]
@@ -438,16 +443,19 @@ func reconstructI4x4(sc *SliceContext, f *Frame,
 	x0 := mbX * 16
 	y0 := mbY * 16
 	sl := &sm.IntraY4x4
+	nb := mbNeighbors(sc, mbIdx)
 
 	for i := range 16 {
 		bx := inverseRasterX4x4[i]
 		by := inverseRasterY4x4[i]
 
-		ref := getLuma4x4Neighbors(f, x0+bx, y0+by, i, mbX, mbY, sc.MBWidth, sc.MBHeight)
+		av := lumaBlockAvail(bx, by, 4, nb)
+		if topRightNotAvail4x4[i] {
+			av.topRight = false
+		}
+		ref := getLuma4x4Neighbors(f, x0+bx, y0+by, av)
 
-		leftAvail := x0+bx > 0
-		topAvail := y0+by > 0
-		predBlock := Predict4x4(mb.Intra4x4PredMode[i], ref, leftAvail, topAvail)
+		predBlock := Predict4x4(mb.Intra4x4PredMode[i], ref, av.left, av.top)
 
 		var coeffs [16]int32
 		for j := range 16 {
@@ -471,19 +479,17 @@ func reconstructI8x8(sc *SliceContext, f *Frame,
 	mbIdx, mbX, mbY int, mb *MBData, sm *ScalingMatrices) error {
 	x0 := mbX * 16
 	y0 := mbY * 16
-	frameW := sc.MBWidth * 16
-	frameH := sc.MBHeight * 16
 	sl := &sm.IntraY8x8
+	nb := mbNeighbors(sc, mbIdx)
 
 	for i := range 4 {
 		bx := (i % 2) * 8
 		by := (i / 2) * 8
 
-		ref := getLuma8x8Neighbors(f, x0+bx, y0+by, i, frameW, frameH)
+		av := lumaBlockAvail(bx, by, 8, nb)
+		ref := getLuma8x8Neighbors(f, x0+bx, y0+by, av)
 
-		leftAvail := x0+bx > 0
-		topAvail := y0+by > 0
-		predBlock := Predict8x8(mb.Intra8x8PredMode[i], ref, leftAvail, topAvail)
+		predBlock := Predict8x8(mb.Intra8x8PredMode[i], ref, av.left, av.top)
 
 		var coeffs [64]int32
 		if sc.IsCAVLC {
@@ -510,83 +516,82 @@ func reconstructI8x8(sc *SliceContext, f *Frame,
 	return nil
 }
 
-func getLuma8x8Neighbors(f *Frame, blkX, blkY int, i8x8 int, frameW, frameH int) [25]uint8 {
-	var ref [25]uint8
-	var avail [25]bool
+func getLuma8x8Neighbors(f *Frame, blkX, blkY int, av mbAvail) [25]uint8 {
+	var p [25]int
 
-	for i := range 8 {
-		px, py := blkX-1, blkY+7-i
-		if px >= 0 && py >= 0 && py < frameH {
-			ref[i] = f.GetLumaPixel(px, py)
-			avail[i] = true
+	if av.left {
+		for i := range 8 {
+			p[i] = int(f.GetLumaPixel(blkX-1, blkY+7-i))
 		}
 	}
 
-	if blkX > 0 && blkY > 0 {
-		ref[8] = f.GetLumaPixel(blkX-1, blkY-1)
-		avail[8] = true
+	if av.topLeft {
+		p[8] = int(f.GetLumaPixel(blkX-1, blkY-1))
 	}
 
-	for i := range 8 {
-		px, py := blkX+i, blkY-1
-		if py >= 0 && px >= 0 && px < frameW {
-			ref[9+i] = f.GetLumaPixel(px, py)
-			avail[9+i] = true
+	if av.top {
+		for i := range 8 {
+			p[9+i] = int(f.GetLumaPixel(blkX+i, blkY-1))
 		}
-	}
-
-	topRightOK := i8x8 != 3
-	for i := range 8 {
-		px, py := blkX+8+i, blkY-1
-		if topRightOK && py >= 0 && px >= 0 && px < frameW {
-			ref[17+i] = f.GetLumaPixel(px, py)
-			avail[17+i] = true
-		}
-	}
-
-	firstAvailIdx := -1
-	for i := range 25 {
-		if avail[i] {
-			firstAvailIdx = i
-			break
-		}
-	}
-	if firstAvailIdx == -1 {
-		for i := range ref {
-			ref[i] = 128
-		}
-	} else {
-		for i := 0; i < firstAvailIdx; i++ {
-			ref[i] = ref[firstAvailIdx]
-		}
-		for i := firstAvailIdx + 1; i < 25; i++ {
-			if !avail[i] {
-				ref[i] = ref[i-1]
+		for i := range 8 {
+			if av.topRight {
+				p[17+i] = int(f.GetLumaPixel(blkX+8+i, blkY-1))
+			} else {
+				p[17+i] = p[16]
 			}
 		}
 	}
 
-	return filterRefSamples8x8(ref)
-}
-
-func filterRefSamples8x8(ref [25]uint8) [25]uint8 {
-	var f [25]uint8
-	f[0] = uint8((int(ref[1]) + 3*int(ref[0]) + 2) >> 2)
-	for i := 1; i < 24; i++ {
-		f[i] = uint8((int(ref[i-1]) + 2*int(ref[i]) + int(ref[i+1]) + 2) >> 2)
+	var ref [25]uint8
+	if av.top {
+		if av.topLeft {
+			ref[9] = uint8((p[8] + 2*p[9] + p[10] + 2) >> 2)
+		} else {
+			ref[9] = uint8((3*p[9] + p[10] + 2) >> 2)
+		}
+		for i := 10; i < 24; i++ {
+			ref[i] = uint8((p[i-1] + 2*p[i] + p[i+1] + 2) >> 2)
+		}
+		ref[24] = uint8((p[23] + 3*p[24] + 2) >> 2)
 	}
-	f[24] = uint8((int(ref[23]) + 3*int(ref[24]) + 2) >> 2)
-	return f
+
+	if av.topLeft {
+		switch {
+		case av.top && av.left:
+			ref[8] = uint8((p[9] + 2*p[8] + p[7] + 2) >> 2)
+		case av.top:
+			ref[8] = uint8((3*p[8] + p[9] + 2) >> 2)
+		case av.left:
+			ref[8] = uint8((3*p[8] + p[7] + 2) >> 2)
+		default:
+			ref[8] = uint8(p[8])
+		}
+	}
+
+	if av.left {
+		if av.topLeft {
+			ref[7] = uint8((p[8] + 2*p[7] + p[6] + 2) >> 2)
+		} else {
+			ref[7] = uint8((3*p[7] + p[6] + 2) >> 2)
+		}
+		for i := 1; i < 7; i++ {
+			ref[i] = uint8((p[i+1] + 2*p[i] + p[i-1] + 2) >> 2)
+		}
+		ref[0] = uint8((p[1] + 3*p[0] + 2) >> 2)
+	}
+
+	return ref
 }
 
 func reconstructChroma(sc *SliceContext, f *Frame,
 	mbIdx, mbX, mbY int, mb *MBData, sm *ScalingMatrices) {
 	chromaSL := [2]*[16]int32{&sm.IntraCb4x4, &sm.IntraCr4x4}
+	nb := mbNeighbors(sc, mbIdx)
 
 	for iCbCr := range 2 {
 		sl := chromaSL[iCbCr]
 
-		top, left, topLeft, hasTop, hasLeft := getChromaNeighbors(f, iCbCr, mbX, mbY)
+		top, left, topLeft, hasTop, hasLeft := getChromaNeighbors(f, iCbCr, mbX, mbY, nb)
 		var topSlice, leftSlice []uint8
 		if hasTop {
 			topSlice = top[:]
@@ -632,30 +637,76 @@ func reconstructChroma(sc *SliceContext, f *Frame,
 	}
 }
 
-func getLuma16x16Neighbors(f *Frame, mbX, mbY int) (
+func getLuma16x16Neighbors(f *Frame, mbX, mbY int, nb mbAvail) (
 	top [16]uint8, left [16]uint8, topLeft uint8, hasTop, hasLeft bool) {
 	x0 := mbX * 16
 	y0 := mbY * 16
 
-	if mbY > 0 {
+	if nb.top {
 		hasTop = true
 		for x := range 16 {
 			top[x] = f.GetLumaPixel(x0+x, y0-1)
 		}
 	}
 
-	if mbX > 0 {
+	if nb.left {
 		hasLeft = true
 		for y := range 16 {
 			left[y] = f.GetLumaPixel(x0-1, y0+y)
 		}
 	}
 
-	if mbX > 0 && mbY > 0 {
+	if nb.topLeft {
 		topLeft = f.GetLumaPixel(x0-1, y0-1)
 	}
 
 	return
+}
+
+type mbAvail struct {
+	left, top, topLeft, topRight bool
+}
+
+func mbNeighbors(sc *SliceContext, mbIdx int) mbAvail {
+	start := sc.MBs[mbIdx].SliceStart
+	mbX := mbIdx % sc.MBWidth
+	mbY := mbIdx / sc.MBWidth
+
+	return mbAvail{
+		left:     mbX > 0 && mbIdx-1 >= start,
+		top:      mbY > 0 && mbIdx-sc.MBWidth >= start,
+		topLeft:  mbX > 0 && mbY > 0 && mbIdx-sc.MBWidth-1 >= start,
+		topRight: mbX < sc.MBWidth-1 && mbY > 0 && mbIdx-sc.MBWidth+1 >= start,
+	}
+}
+
+func lumaBlockAvail(bx, by, size int, nb mbAvail) mbAvail {
+	av := mbAvail{
+		left:     bx > 0 || nb.left,
+		top:      by > 0 || nb.top,
+		topRight: bx+size < 16,
+	}
+
+	switch {
+	case bx > 0 && by > 0:
+		av.topLeft = true
+	case by > 0:
+		av.topLeft = nb.left
+	case bx > 0:
+		av.topLeft = nb.top
+	default:
+		av.topLeft = nb.topLeft
+	}
+
+	if by == 0 {
+		if bx+size < 16 {
+			av.topRight = nb.top
+		} else {
+			av.topRight = nb.topRight
+		}
+	}
+
+	return av
 }
 
 var topRightNotAvail4x4 = [16]bool{
@@ -665,49 +716,34 @@ var topRightNotAvail4x4 = [16]bool{
 	false, false, false, true,
 }
 
-func getLuma4x4Neighbors(f *Frame, x0, y0 int, blkIdx int, mbX, mbY int, mbW, mbH int) [13]uint8 {
+func getLuma4x4Neighbors(f *Frame, x0, y0 int, av mbAvail) [13]uint8 {
 	var ref [13]uint8
-	frameW := mbW * 16
-	frameH := mbH * 16
 
 	for i := range 4 {
-		if x0 > 0 && y0+3-i >= 0 && y0+3-i < frameH {
+		if av.left {
 			ref[i] = f.GetLumaPixel(x0-1, y0+3-i)
 		} else {
 			ref[i] = 128
 		}
 	}
 
-	if x0 > 0 && y0 > 0 {
+	if av.topLeft {
 		ref[4] = f.GetLumaPixel(x0-1, y0-1)
 	} else {
 		ref[4] = 128
 	}
 
 	for i := range 4 {
-		if y0 > 0 && x0+i >= 0 && x0+i < frameW {
+		if av.top {
 			ref[5+i] = f.GetLumaPixel(x0+i, y0-1)
 		} else {
 			ref[5+i] = 128
 		}
 	}
 
-	trAvail := true
-	if topRightNotAvail4x4[blkIdx] {
-		trAvail = false
-	} else if blkIdx == 5 && mbX >= mbW-1 {
-		trAvail = false
-	} else if blkIdx == 13 {
-		trAvail = false
-	}
-
-	if trAvail {
+	if av.top && av.topRight {
 		for i := 4; i < 8; i++ {
-			if y0 > 0 && x0+i >= 0 && x0+i < frameW {
-				ref[5+i] = f.GetLumaPixel(x0+i, y0-1)
-			} else {
-				ref[5+i] = 128
-			}
+			ref[5+i] = f.GetLumaPixel(x0+i, y0-1)
 		}
 	} else {
 		for i := 4; i < 8; i++ {
@@ -718,26 +754,26 @@ func getLuma4x4Neighbors(f *Frame, x0, y0 int, blkIdx int, mbX, mbY int, mbW, mb
 	return ref
 }
 
-func getChromaNeighbors(f *Frame, comp int, mbX, mbY int) (
+func getChromaNeighbors(f *Frame, comp int, mbX, mbY int, nb mbAvail) (
 	top [8]uint8, left [8]uint8, topLeft uint8, hasTop, hasLeft bool) {
 	x0 := mbX * 8
 	y0 := mbY * 8
 
-	if mbY > 0 {
+	if nb.top {
 		hasTop = true
 		for x := range 8 {
 			top[x] = f.GetChromaPixel(comp, x0+x, y0-1)
 		}
 	}
 
-	if mbX > 0 {
+	if nb.left {
 		hasLeft = true
 		for y := range 8 {
 			left[y] = f.GetChromaPixel(comp, x0-1, y0+y)
 		}
 	}
 
-	if mbX > 0 && mbY > 0 {
+	if nb.topLeft {
 		topLeft = f.GetChromaPixel(comp, x0-1, y0-1)
 	}
 

@@ -2,6 +2,9 @@ package h265
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"hash"
 	"os"
 	"testing"
 )
@@ -182,5 +185,119 @@ func TestDecodeTinyIntraConform(t *testing.T) {
 
 	if !bytes.Equal(got, ref) {
 		t.Fatal("decoded pixels do not match reference yuv")
+	}
+}
+
+func writePictureYUV(h hash.Hash, p *Picture) {
+	for y := 0; y < p.CropH; y++ {
+		h.Write(p.Y[y*p.StrideY : y*p.StrideY+p.CropW])
+	}
+	cw, ch := p.CropW/2, p.CropH/2
+	for y := 0; y < ch; y++ {
+		h.Write(p.Cb[y*p.StrideC : y*p.StrideC+cw])
+	}
+	for y := 0; y < ch; y++ {
+		h.Write(p.Cr[y*p.StrideC : y*p.StrideC+cw])
+	}
+}
+
+func pictureHash(p *Picture) string {
+	h := sha256.New()
+	writePictureYUV(h, p)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func decodeMultiSlice(t *testing.T, threads int) ([]string, string) {
+	data, err := os.ReadFile("../../tests/testdata/multislice_intra.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	d := Decoder{}
+	d.Threads(threads)
+	defer d.Close()
+
+	var pics []*Picture
+	for _, nal := range SplitAnnexB(data) {
+		out, err := d.DecodeNAL(nal)
+		if err != nil {
+			t.Fatalf("threads=%d: %v", threads, err)
+		}
+		pics = append(pics, out...)
+	}
+	pics = append(pics, d.Flush()...)
+
+	hashes := make([]string, len(pics))
+	all := sha256.New()
+	for i, p := range pics {
+		hashes[i] = pictureHash(p)
+		writePictureYUV(all, p)
+		p.Release()
+	}
+	return hashes, hex.EncodeToString(all.Sum(nil))
+}
+
+func TestDecodeMultiSlice(t *testing.T) {
+	a, ha := decodeMultiSlice(t, 1)
+	b, hb := decodeMultiSlice(t, 4)
+
+	const want = "e736ee726ca6ebc6787ecd29968dfecd50e6eba7a7e3aecb0c153c14fab82d92"
+	if ha != want || hb != want {
+		t.Fatalf("decoded yuv hashes %s and %s, want %s", ha, hb, want)
+	}
+	if len(a) != 3 || len(b) != 3 {
+		t.Fatalf("decoded %d and %d pictures, want 3", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("picture %d differs between thread counts", i)
+		}
+	}
+}
+
+func TestDecodeMultiSliceMissingSegment(t *testing.T) {
+	want, _ := decodeMultiSlice(t, 1)
+	data, err := os.ReadFile("../../tests/testdata/multislice_intra.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	d := Decoder{}
+	defer d.Close()
+
+	var got []string
+	vcl := 0
+	for _, nal := range SplitAnnexB(data) {
+		if nal.Type.IsVCL() {
+			vcl++
+			if vcl == 6 {
+				continue
+			}
+		}
+		out, err := d.DecodeNAL(nal)
+		if err != nil {
+			t.Fatalf("decode failed: %v", err)
+		}
+		for _, p := range out {
+			got = append(got, pictureHash(p))
+			p.Release()
+		}
+	}
+	for _, p := range d.Flush() {
+		got = append(got, pictureHash(p))
+		p.Release()
+	}
+
+	known := make(map[string]bool, len(want))
+	for _, h := range want {
+		known[h] = true
+	}
+	for _, h := range got {
+		if !known[h] {
+			t.Fatal("emitted a picture that is not in the pristine stream")
+		}
+	}
+	if len(got) >= len(want) {
+		t.Fatalf("missing segment did not drop a picture: %d of %d", len(got), len(want))
 	}
 }

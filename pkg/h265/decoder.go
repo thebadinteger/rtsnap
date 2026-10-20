@@ -8,6 +8,7 @@ type Decoder struct {
 
 	cur      *Picture
 	curOut   bool
+	curLsb   uint32
 	ctu      *ctuDecoder
 	ctuPrev  *ctuDecoder
 	prevSlic *sliceHeader
@@ -31,6 +32,10 @@ func (d *Decoder) FrameSizeLimit(n int) { d.frameSizeLimit = n }
 
 // reset stream state but keep scratch buffers for the next stream
 func (d *Decoder) Reset() {
+	if d.cur != nil {
+		d.cur.release()
+	}
+
 	for i := range d.dpb {
 		d.dpb[i].pic.release()
 	}
@@ -58,6 +63,10 @@ func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
 		d.vps = make(map[uint8]*vps)
 		d.sps = make(map[uint32]*sps)
 		d.pps = make(map[uint32]*pps)
+	}
+
+	if nal.LayerID != 0 {
+		return nil, nil
 	}
 
 	switch nal.Type {
@@ -102,7 +111,7 @@ func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
 		return nil, nil
 	}
 
-	if nal.Type.IsIRAP() {
+	if nal.Type.IsIRAP() && len(nal.RBSP) > 0 && nal.RBSP[0]&0x80 != 0 {
 		d.skipRASL = !d.seenPicture || nal.Type.IsIDR() ||
 			(nal.Type >= NALBlaWLP && nal.Type <= NALBlaNLP)
 		d.seenPicture = true
@@ -228,7 +237,7 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 	var done []*Picture
 
 	if sh.firstSliceSegmentInPic {
-		prior := d.cur != nil
+		prior := d.cur != nil || len(d.dpb) != 0
 
 		done = append(done, d.finishPicture()...)
 
@@ -262,6 +271,10 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 				}
 			}
 
+			for i := range d.dpb {
+				d.dpb[i].pic.release()
+			}
+
 			d.dpb = nil
 		default:
 			d.dpbMark(&rps)
@@ -278,14 +291,15 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 		d.cur = newPicture(sharedPool, s)
 		d.cur.POC = int(poc)
 		d.curOut = sh.picOutputFlag
+		d.curLsb = sh.picOrderCntLsb
 		d.ctu = newCTUDecoder(d.ctuScratch(), s, p, sh, d.cur)
 		d.ctu.threads = d.waveThreads()
 		d.ctuPrev = d.ctu
 		d.ctu.poc = poc
 	}
 
-	if d.cur == nil || d.ctu == nil {
-		return nil, ErrInvalid
+	if d.cur == nil || d.ctu == nil || sh.picOrderCntLsb != d.curLsb {
+		return done, ErrInvalid
 	}
 
 	d.ctu.sh = sh
@@ -293,7 +307,11 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 	d.buildRefLists(sh)
 
 	if err := d.ctu.decodeSliceData(nal, sh); err != nil {
-		return nil, err
+		return done, err
+	}
+
+	if d.ctu.complete() {
+		done = append(done, d.finishPicture()...)
 	}
 
 	return done, nil

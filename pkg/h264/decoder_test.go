@@ -1,6 +1,8 @@
 package h264
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"testing"
 )
@@ -232,4 +234,38 @@ func FuzzH264DecodeNALUs(f *testing.F) {
 		d.FrameSizeLimit(7680 * 4320)
 		_, _ = d.DecodeNALUs([][]byte{b})
 	})
+}
+
+func TestDecodeMultiSlice(t *testing.T) {
+	data, err := os.ReadFile("../../tests/testdata/multislice_idr.264")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	d := New()
+	f, err := d.DecodeAnnexB(data)
+	if err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	if f == nil {
+		t.Fatal("frame is nil")
+	}
+	if f.Width != 128 || f.Height != 128 {
+		t.Fatalf("unexpected size %dx%d", f.Width, f.Height)
+	}
+
+	h := sha256.New()
+	for y := 0; y < f.Height; y++ {
+		h.Write(f.Y[y*f.StrideY : y*f.StrideY+f.Width])
+	}
+	for y := 0; y < f.Height/2; y++ {
+		h.Write(f.Cb[y*f.StrideC : y*f.StrideC+f.Width/2])
+	}
+	for y := 0; y < f.Height/2; y++ {
+		h.Write(f.Cr[y*f.StrideC : y*f.StrideC+f.Width/2])
+	}
+	const want = "31be60f72099faa5c21901b0550ee12d68a52d23a6193609bc0a58dac4dd5d75"
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		t.Fatalf("decoded picture hash %s, want %s", got, want)
+	}
 }

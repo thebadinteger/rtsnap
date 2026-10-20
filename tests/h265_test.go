@@ -358,3 +358,32 @@ func TestH265ConcurrentDecoders(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestH265SnapshotMultiSlice(t *testing.T) {
+	data, err := os.ReadFile("testdata/multislice_intra.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	rawNALs := splitAnnexBNALBytes(data)
+	server, err := newMockServer(&mockServer{
+		codec:   "h265",
+		packets: makeRTPPacketsH265(rawNALs),
+	})
+	if err != nil {
+		t.Fatalf("newMockServer: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, server.URL())
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+	b := img.Bounds()
+	if b.Dx() != 192 || b.Dy() != 128 {
+		t.Fatalf("unexpected size %dx%d", b.Dx(), b.Dy())
+	}
+}
