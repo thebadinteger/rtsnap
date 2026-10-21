@@ -68,6 +68,49 @@ func parseAuthHeader(header string) map[string]string {
 	return params
 }
 
+// supported digest algorithm, empty when the challenge names an unknown one
+func digestAlgo(params map[string]string) (string, bool) {
+	algo := strings.ToUpper(strings.TrimSpace(params["algorithm"]))
+	switch algo {
+	case "":
+		return "MD5", true
+	case "MD5", "MD5-SESS", "SHA-256", "SHA-256-SESS":
+		return algo, true
+	}
+	return "", false
+}
+
+// true when the challenge offers qop auth among its options
+func hasQopAuth(params map[string]string) bool {
+	for _, v := range strings.Split(params["qop"], ",") {
+		if strings.EqualFold(strings.TrimSpace(v), "auth") {
+			return true
+		}
+	}
+	return false
+}
+
+// true when the challenge offers qop auth-int among its options
+func hasQopAuthInt(params map[string]string) bool {
+	for _, v := range strings.Split(params["qop"], ",") {
+		if strings.EqualFold(strings.TrimSpace(v), "auth-int") {
+			return true
+		}
+	}
+	return false
+}
+
+// qop to use, auth is cheaper and preferred when both are offered
+func pickQop(params map[string]string) string {
+	switch {
+	case hasQopAuth(params):
+		return "auth"
+	case hasQopAuthInt(params):
+		return "auth-int"
+	}
+	return ""
+}
+
 // build auth from server challenge
 func NewAuth(wwwAuth, username, password string) *Auth {
 	params := parseAuthHeader(wwwAuth)
@@ -86,29 +129,12 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 		}
 	}
 
-	algo := strings.ToUpper(strings.TrimSpace(params["algorithm"]))
-	switch algo {
-	case "":
-		algo = "MD5"
-	case "MD5", "MD5-SESS", "SHA-256", "SHA-256-SESS":
-	default:
+	algo, ok := digestAlgo(params)
+	if !ok {
 		return nil
 	}
 
-	// keep the offered qop but only use auth, an unsupported one degrades to no qop
-	qop := strings.TrimSpace(params["qop"])
-	if qop != "" {
-		hasAuth := false
-		for _, v := range strings.Split(qop, ",") {
-			if strings.EqualFold(strings.TrimSpace(v), "auth") {
-				hasAuth = true
-				break
-			}
-		}
-		if !hasAuth {
-			qop = ""
-		}
-	}
+	qop := pickQop(params)
 
 	return &Auth{
 		Username: username,
@@ -122,6 +148,7 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 	}
 }
 
+// rank a challenge, higher is better
 func authRank(header string) int {
 	params := parseAuthHeader(header)
 
@@ -132,28 +159,24 @@ func authRank(header string) int {
 		return 0
 	}
 
-	switch strings.ToUpper(strings.TrimSpace(params["algorithm"])) {
-	case "", "MD5", "MD5-SESS", "SHA-256", "SHA-256-SESS":
-	default:
+	algo, ok := digestAlgo(params)
+	if !ok {
 		return 0
 	}
 
-	sha := strings.HasPrefix(strings.ToUpper(params["algorithm"]), "SHA-256")
-
-	qop := strings.TrimSpace(params["qop"])
-	if qop == "" {
-		if sha {
-			return 4
-		}
-		return 3
+	sha := 0
+	if strings.HasPrefix(algo, "SHA-256") {
+		sha = 1
 	}
-	for _, v := range strings.Split(qop, ",") {
-		if strings.EqualFold(strings.TrimSpace(v), "auth") {
-			if sha {
-				return 4
-			}
-			return 3
-		}
+
+	qop := pickQop(params)
+	switch {
+	case qop == "auth":
+		return 5 + sha
+	case qop == "auth-int":
+		return 4 + sha
+	case strings.TrimSpace(params["qop"]) == "":
+		return 3 + sha
 	}
 	// an unsupported qop leaves a plain digest, which is weaker than basic
 	return 1
@@ -195,8 +218,13 @@ func randomCnonce() string {
 	return hex.EncodeToString(b[:])
 }
 
-// render auth header value
+// render auth header value for a request without a body
 func (a *Auth) Generate(method, uri string) string {
+	return a.GenerateBody(method, uri, nil)
+}
+
+// render auth header value, body is only used by qop auth-int
+func (a *Auth) GenerateBody(method, uri string, body []byte) string {
 	if a.Method == "basic" {
 		creds := a.Username + ":" + a.Password
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
@@ -208,11 +236,15 @@ func (a *Auth) Generate(method, uri string) string {
 	parts = append(parts, fmt.Sprintf(`nonce="%s"`, a.Nonce))
 	parts = append(parts, fmt.Sprintf(`uri="%s"`, uri))
 
-	hasQop := false
+	qop := ""
 	for _, q := range strings.Split(a.Qop, ",") {
-		if strings.EqualFold(strings.TrimSpace(q), "auth") {
-			hasQop = true
+		q = strings.TrimSpace(q)
+		if strings.EqualFold(q, "auth") {
+			qop = "auth"
 			break
+		}
+		if strings.EqualFold(q, "auth-int") && qop == "" {
+			qop = "auth-int"
 		}
 	}
 
@@ -224,14 +256,20 @@ func (a *Auth) Generate(method, uri string) string {
 	if strings.HasSuffix(strings.ToLower(a.Algo), "-sess") {
 		ha1 = a.hash(ha1 + ":" + a.Nonce + ":" + a.Cnonce)
 	}
-	ha2 := a.hash(method + ":" + uri)
+
+	var ha2 string
+	if qop == "auth-int" {
+		ha2 = a.hash(method + ":" + uri + ":" + a.hash(string(body)))
+	} else {
+		ha2 = a.hash(method + ":" + uri)
+	}
 
 	var response string
-	if hasQop {
+	if qop != "" {
 		a.NC++
 		nc := fmt.Sprintf("%08x", a.NC)
-		response = a.hash(ha1 + ":" + a.Nonce + ":" + nc + ":" + a.Cnonce + ":auth:" + ha2)
-		parts = append(parts, `qop=auth`)
+		response = a.hash(ha1 + ":" + a.Nonce + ":" + nc + ":" + a.Cnonce + ":" + qop + ":" + ha2)
+		parts = append(parts, `qop=`+qop)
 		parts = append(parts, fmt.Sprintf(`nc=%s`, nc))
 		parts = append(parts, fmt.Sprintf(`cnonce="%s"`, a.Cnonce))
 	} else {

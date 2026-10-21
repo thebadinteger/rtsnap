@@ -358,6 +358,12 @@ func reconstructFrame(sc *SliceContext, f *Frame, sps *SPS, pps *PPS) error {
 		mbY := mbIdx / sc.MBWidth
 		mb := &sc.MBs[mbIdx]
 
+		if mb.IsPCM {
+			reconstructPCM(sc, f, mbX, mbY, mb)
+
+			continue
+		}
+
 		if mb.MBType >= 1 && mb.MBType <= 24 {
 			err := reconstructI16x16(sc, f, mbIdx, mbX, mbY, mb, &sm)
 			if err != nil {
@@ -383,6 +389,32 @@ func reconstructFrame(sc *SliceContext, f *Frame, sps *SPS, pps *PPS) error {
 	}
 
 	return nil
+}
+
+// pcm samples are already reconstructed, copy them into the frame planes
+func reconstructPCM(sc *SliceContext, f *Frame, mbX, mbY int, mb *MBData) {
+	x0 := mbX * 16
+	y0 := mbY * 16
+
+	for y := range 16 {
+		for x := range 16 {
+			f.SetLumaPixel(x0+x, y0+y, mb.PCMLuma[y*16+x])
+		}
+	}
+
+	if sc.ChromaArrayType == 0 {
+		return
+	}
+
+	cx0 := mbX * 8
+	cy0 := mbY * 8
+
+	for y := range 8 {
+		for x := range 8 {
+			f.SetChromaPixel(0, cx0+x, cy0+y, mb.PCMCb[y*8+x])
+			f.SetChromaPixel(1, cx0+x, cy0+y, mb.PCMCr[y*8+x])
+		}
+	}
 }
 
 func reconstructI16x16(sc *SliceContext, f *Frame,

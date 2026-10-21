@@ -71,7 +71,7 @@ a=control:trackID=2
 	if len(track.PPS) == 0 {
 		t.Errorf("expected pps, got none")
 	}
-	if track.Control != "rtsp://192.168.1.100:554/trackID=1" {
+	if track.Control != "rtsp://192.168.1.100:554/live/trackID=1" {
 		t.Errorf("unexpected control: %s", track.Control)
 	}
 }

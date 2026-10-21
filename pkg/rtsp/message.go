@@ -166,13 +166,22 @@ func readResponse(br *bufio.Reader) (*Response, string, error) {
 		HeaderValues:  values,
 	}
 
-	clStr := res.Header("Content-Length")
-	if clStr != "" {
-		cl, err := strconv.Atoi(clStr)
-		if err == nil && cl > 0 {
-			if cl > maxResponseBody {
-				return nil, "", fmt.Errorf("response body too large: %d bytes", cl)
-			}
+	clValues := res.Values("Content-Length")
+	if len(clValues) > 1 {
+		return nil, "", fmt.Errorf("multiple content-length headers")
+	}
+	if len(clValues) == 1 {
+		cl, err := strconv.Atoi(strings.TrimSpace(clValues[0]))
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid content-length: %s", clValues[0])
+		}
+		if cl < 0 {
+			return nil, "", fmt.Errorf("negative content-length: %d", cl)
+		}
+		if cl > maxResponseBody {
+			return nil, "", fmt.Errorf("response body too large: %d bytes", cl)
+		}
+		if cl > 0 {
 			body := make([]byte, cl)
 			_, err = io.ReadFull(br, body)
 			if err != nil {

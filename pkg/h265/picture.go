@@ -375,6 +375,26 @@ func (p *Picture) Image() image.Image {
 	return nil
 }
 
+func (p *Picture) ImageCopy() image.Image {
+	switch v := p.Image().(type) {
+	case *image.YCbCr:
+		out := *v
+		out.Y = append([]uint8(nil), v.Y...)
+		out.Cb = append([]uint8(nil), v.Cb...)
+		out.Cr = append([]uint8(nil), v.Cr...)
+
+		return &out
+	case *image.Gray:
+		out := *v
+		out.Pix = append([]uint8(nil), v.Pix...)
+
+		return &out
+	default:
+		// deep or nil images already own their pixels
+		return v
+	}
+}
+
 // convert deep picture to 8 bit for display
 func (p *Picture) downshift(w, h int) image.Image {
 	shift := func(depth int) int {

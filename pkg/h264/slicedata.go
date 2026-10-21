@@ -56,7 +56,8 @@ func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB 
 			return lastMB, fmt.Errorf("cabac: unexpected end of slice data at mb %d", mbIdx)
 		}
 
-		if mbIdx < sc.TotalMBs-1 {
+		// end_of_slice_flag is not coded for pcm macroblocks
+		if mbIdx < sc.TotalMBs-1 && !sc.MBs[mbIdx].IsPCM {
 			endOfSlice := dec.DecodeTerminate()
 			if endOfSlice == 1 {
 				break
@@ -255,8 +256,60 @@ func decodeResidualMB(sc *SliceContext, mbIdx int) error {
 	return nil
 }
 
+// chroma samples per plane for the mb chroma array size in use
+func pcmChromaCount(chromaArrayType int) int {
+	switch chromaArrayType {
+	case 0:
+		return 0
+	case 1:
+		return 64
+	case 2:
+		return 128
+	default:
+		return 256
+	}
+}
+
+func readPCMSamples(sc *SliceContext, mb *MBData, data []byte, off int) {
+	shiftY := uint(0)
+	if sc.BitDepthY > 8 {
+		shiftY = uint(sc.BitDepthY - 8)
+	}
+	shiftC := uint(0)
+	if sc.BitDepthC > 8 {
+		shiftC = uint(sc.BitDepthC - 8)
+	}
+
+	for i := range 256 {
+		mb.PCMLuma[i] = data[off+i] >> shiftY
+	}
+
+	n := pcmChromaCount(sc.ChromaArrayType)
+	for i := range min(n, 64) {
+		mb.PCMCb[i] = data[off+256+i] >> shiftC
+		mb.PCMCr[i] = data[off+256+n+i] >> shiftC
+	}
+}
+
 func decodeIPCM(sc *SliceContext, mbIdx int) error {
-	return nil
+	dec := sc.Cabac
+	dec.AlignToByte()
+
+	mb := &sc.MBs[mbIdx]
+	mb.MBType = MBTypeIPCM
+	mb.IsPCM = true
+	mb.QPY = 26
+	sc.QPY = 26
+
+	off := dec.pos
+	count := 256 + 2*pcmChromaCount(sc.ChromaArrayType)
+	if off+count > len(dec.data) {
+		return fmt.Errorf("pcm samples overrun slice data at mb %d", mbIdx)
+	}
+
+	readPCMSamples(sc, mb, dec.data, off)
+
+	return dec.reinit(off + count)
 }
 
 func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int) (int, error) {
@@ -508,6 +561,25 @@ func decodeResidualMBCAVLC(sc *SliceContext, mbIdx int) error {
 }
 
 func decodeIPCMCAVLC(sc *SliceContext, mbIdx int) error {
+	br := sc.Br
+	br.AlignToByte()
+
+	mb := &sc.MBs[mbIdx]
+	mb.MBType = MBTypeIPCM
+	mb.IsPCM = true
+	mb.QPY = 26
+	sc.QPY = 26
+
+	off := br.bytePos
+	count := 256 + 2*pcmChromaCount(sc.ChromaArrayType)
+	if br.bitPos != 0 || off+count > len(br.data) {
+		return fmt.Errorf("pcm samples overrun slice data at mb %d", mbIdx)
+	}
+
+	readPCMSamples(sc, mb, br.data, off)
+
+	br.bytePos += count
+
 	return nil
 }
 

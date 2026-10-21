@@ -113,31 +113,33 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 		pps.Transform8x8ModeFlag = reader.ReadFlag()
 		pps.PicScalingMatrixPresentFlag = reader.ReadFlag()
 		if pps.PicScalingMatrixPresentFlag {
-			sps, ok := spsMap[pps.SeqParameterSetID]
-			if !ok {
-				return pps, fmt.Errorf("sps ID %d not found in map", pps.SeqParameterSetID)
+			// 12 lists for 4:4:4, else 6 plus two 8x8 lists with transform8x8
+			chroma := 1
+			if sps, ok := spsMap[pps.SeqParameterSetID]; ok {
+				chroma = int(sps.ChromaArrayType())
 			}
+
 			nrScalingLists := 6
 			if pps.Transform8x8ModeFlag {
-				if sps.ChromaFormatIDC != 3 {
-					nrScalingLists += 2
-				} else {
-					nrScalingLists += 6
-				}
-				pps.PicScalingLists = make([]ScalingList, nrScalingLists)
+				nrScalingLists += 2
+			}
+			if chroma == 3 {
+				nrScalingLists = 12
+			}
 
-				for i := 0; i < nrScalingLists; i++ {
-					picScalingPresent := reader.ReadFlag()
-					if !picScalingPresent {
-						pps.PicScalingLists[i] = nil
-						continue
-					}
-					sizeOfScalingList := 16
-					if i >= 6 {
-						sizeOfScalingList = 64
-					}
-					pps.PicScalingLists[i] = readScalingList(reader, sizeOfScalingList)
+			pps.PicScalingLists = make([]ScalingList, nrScalingLists)
+
+			for i := 0; i < nrScalingLists; i++ {
+				picScalingPresent := reader.ReadFlag()
+				if !picScalingPresent {
+					pps.PicScalingLists[i] = nil
+					continue
 				}
+				sizeOfScalingList := 16
+				if i >= 6 {
+					sizeOfScalingList = 64
+				}
+				pps.PicScalingLists[i] = readScalingList(reader, sizeOfScalingList)
 			}
 		}
 		pps.SecondChromaQpIndexOffset = reader.ReadSignedGolomb()

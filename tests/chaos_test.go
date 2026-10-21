@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"image"
 	"image/draw"
 	"math/rand"
@@ -170,6 +171,14 @@ func TestChaosH264HeavyLoss(t *testing.T) {
 
 	img, err := rtsnap.Snapshot(ctx, server.URL())
 	if err != nil {
+		// heavy loss may starve the stream, that is a pass as long as it times out cleanly
+		timedOut := ctx.Err() != nil ||
+			errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, os.ErrDeadlineExceeded)
+		if !timedOut {
+			t.Fatalf("snapshot failed before timeout: %v", err)
+		}
+
 		return
 	}
 	refServer := servePackets(t, "h264", makeRTPPacketsH264(nalus))
@@ -422,7 +431,10 @@ func TestChaosH265FullPStream(t *testing.T) {
 		}
 	}
 
-	ref := snapshotHash(t, servePackets(t, "h265", makeRTPPacketsH265(rawNALs[:end])).URL())
+	refServer := servePackets(t, "h265", makeRTPPacketsH265(rawNALs[:end]))
+	defer refServer.Close()
+	ref := snapshotHash(t, refServer.URL())
+
 	server := servePackets(t, "h265", makeRTPPacketsH265(rawNALs))
 	defer server.Close()
 

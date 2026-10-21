@@ -23,6 +23,9 @@ func main() {
 	if err := client.Describe(ctx); err != nil {
 		panic(err)
 	}
+	if client.Track == nil {
+		panic("no supported video track")
+	}
 	fmt.Printf("stream codec: %s, control: %s\n", client.Track.Codec, client.Track.Control)
 
 	if err := client.Setup(ctx); err != nil {
@@ -35,8 +38,8 @@ func main() {
 	}
 	defer client.Teardown(ctx)
 
-	// read first incoming rtp packet
-	frame, err := client.ReadFrame(ctx)
+	// read the next packet carrying rtp, skipping interleaved rtcp
+	frame, err := client.ReadRTPFrame(ctx)
 	if err != nil {
 		panic(err)
 	}

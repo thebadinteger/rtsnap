@@ -25,7 +25,7 @@
 - Basic and Digest auth support
 - Transports: `TCP interleaved, UDP unicast` 
 - Auto fallback with packet loss recovery
-- HTTP/HTTPS tunneling for cameras/servers behind web ports
+- HTTP/HTTPS tunneling for servers behind web ports
 
 ## Start  
 Install the library:  
@@ -106,7 +106,7 @@ Practical and runnable code examples are available in the [`examples/`](examples
 - [examples/debug](examples/debug/main.go) - Printing raw RTSP exchange while capturing
 - [examples/lowlevel](examples/lowlevel/main.go) - Low-level RTSP client session negotiation and raw RTP packet reading
 - [examples/tunnel](examples/tunnel/main.go) - HTTP/HTTPS tunneling and custom TLS configuration
-- [examples/probe](examples/probe/main.go) - Credential and route probing via raw DESCRIBE without capturing frames
+- [examples/probe](examples/probe/main.go) - Inspecting DESCRIBE status codes and auth challenges without capturing frames
 - [examples/h264](examples/h264/main.go) - Manual H.264 depacketization and NAL decoding
 - [examples/mjpeg](examples/mjpeg/main.go) - Manual MJPEG depacketization and JPEG frame reconstruction
 
@@ -126,7 +126,7 @@ Connects to the RTSP stream, issues `DESCRIBE`, `SETUP`, and `PLAY`, reads incom
 ```go
 func SnapshotJPEG(ctx context.Context, rtspURL string, quality int, opts ...Option) ([]byte, error)
 ```
-Convenience helper that captures a frame and returns JPEG bytes. For `H.264`/`H.265` it decodes via `Snapshot` and re-encodes with the specified quality (`1` to `100`). For `MJPEG` it returns the original camera bytes directly without decode and re-encode, the `quality` argument is ignored unless `WithTranscode` is set  
+Convenience helper that captures a frame and returns JPEG bytes. For `H.264`/`H.265` it decodes via `Snapshot` and re-encodes with the specified quality (`1` to `100`). For `MJPEG` it returns the depacketized JPEG stream directly without decode and re-encode, the `quality` argument is ignored unless `WithTranscode` is set  
 #### `rtsnap.Query`
 ```go
 func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error)
@@ -134,17 +134,17 @@ func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, er
 Connects to the RTSP stream and queries available video tracks (codec, payload type, clock rate, control URL) without initiating streaming or frame decoding  
 ### Low-level responses
 `pkg/rtsp` exposes `DescribeRaw`, `SetupRaw`, `PlayRaw`, and `Do`, which return the `*rtsp.Response` even for non-success statuses; auth retry is allowed where state is negotiated (`Setup`/`Play`), so `session`, `Transport` and interleaved channels stay consistent. A rejected `401` with no usable credentials is returned as a plain response, never as a transport error. `ReadRTPFrame` is a low-level helper that returns the next `*rtsp.Frame` on the negotiated RTP channel, skipping interleaved RTCP and any other channel  
-Description helpers differ on purpose: `Describe` retries with the configured credentials and returns `*rtsp.StatusError` on non-`200`; `DescribeAuth` does the same but returns the response; `DescribeRaw` performs no auth retry and just returns the response, which is what route/credential probing needs  
+Description helpers differ on purpose: `Describe` retries with the configured credentials and returns `*rtsp.StatusError` on non-`200`; `DescribeAuth` does the same but returns the response; `DescribeRaw` performs no auth retry and just returns the response, for callers that need the exact status and headers  
 ### Functional Options  
 - `WithAuth(username, password string)`: Sets credentials for HTTP Basic or Digest authentication
 - `WithTimeout(d time.Duration)`: Sets a client-side timeout that bounds the total operation duration
 - `WithCodec(c Codec)`: Selects a preferred video codec (`rtsnap.CodecH264`, `rtsnap.CodecH265`, `rtsnap.CodecMJPEG`, or `rtsnap.CodecAuto`). By default, `CodecAuto` selects the highest priority available codec (`H.264` > `H.265` > `MJPEG`)
 - `WithFast()`: Skips loop filters (`H.264` deblocking, `H.265` deblocking and SAO) for faster decoding with negligible quality loss on single snapshots
-- `WithTransport(t Transport)`: Selects RTP transport (`rtsnap.TransportTCP`, `rtsnap.TransportUDP`, `rtsnap.TransportAuto`). Defaults to TCP interleaved. `Auto` tries UDP first and falls back to TCP when the camera rejects it
+- `WithTransport(t Transport)`: Selects RTP transport (`rtsnap.TransportTCP`, `rtsnap.TransportUDP`, `rtsnap.TransportAuto`). Defaults to TCP interleaved. `Auto` tries UDP first and falls back to TCP when the server rejects it
 - `WithTranscode()`: Forces MJPEG streams to be decoded and re-encoded in `SnapshotJPEG` (default is raw passthrough)
-- `WithUserAgent(ua string)`: Overrides the `User-Agent` header (default `rtsnap`), some picky cameras/servers require values like `VLC/3.0.16`
+- `WithUserAgent(ua string)`: Overrides the `User-Agent` header (default `rtsnap`), some picky servers require values like `VLC/3.0.16`
 - `WithDebugFunc(fn func(string))`: Receives raw RTSP request/response text as it happens
-- `WithTLSVerify()`: Enables TLS certificate verification for `rtsps` connections (default is insecure)
+- `WithTLSVerify()`: Enables TLS certificate verification for `rtsps` and `https` connections (default is insecure)
 - `WithTLSConfig(cfg *tls.Config)`: Uses a custom TLS configuration for `rtsps` and `https`
 - `WithTunnel()`: Wraps RTSP into an HTTP tunnel; `http://` and `https://` URLs enable it automatically
 
@@ -160,7 +160,7 @@ Description helpers differ on purpose: `Describe` retries with the configured cr
 1. **Basic Authentication (RFC 7617)**: Encoded with standard base64 credentials
 2. **Digest Authentication (RFC 7616)**:
    - Supported algorithms: `MD5`, `SHA-256`, `MD5-sess`, `SHA-256-sess`
-   - Supported quality of protection: `qop="auth"`
+   - Supported quality of protection: `qop="auth"` and `qop="auth-int"` (integrity hashing over request bodies)
    - Automatic nonce tracking, cnonce generation, and request counter (`nc`) management
 
 Credentials are supplied via `WithAuth("user", "pass")` or in the URL: `rtsp://user:pass@0.0.0.0:554/live`
@@ -194,7 +194,7 @@ rtsnap/
 ```
 
 Transports: TCP interleaved (default), UDP unicast, auto UDP with TCP fallback, HTTP/HTTPS tunnel  
-`rtsps` skips TLS certificate verification by default because cameras usually use self-signed certificates, but it can be enabled via `WithTLSVerify()` or overridden with `WithTLSConfig()`
+`rtsps`/`https` skip TLS certificate verification by default because media servers usually use self-signed certificates, but it can be enabled via `WithTLSVerify()` or overridden with `WithTLSConfig()`
 
 ## Documentation
 Docs live on **[pkg.go.dev/github.com/thebadinteger/rtsnap](https://pkg.go.dev/github.com/thebadinteger/rtsnap)**

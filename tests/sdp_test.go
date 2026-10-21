@@ -54,7 +54,7 @@ a=control:trackID=1
 	if len(track.PPS) == 0 {
 		t.Error("expected parsed pps")
 	}
-	if track.Control != "rtsp://127.0.0.1:554/trackID=1" {
+	if track.Control != "rtsp://127.0.0.1:554/stream1/trackID=1" {
 		t.Errorf("unexpected resolved control url: %s", track.Control)
 	}
 }
@@ -172,7 +172,7 @@ a=Control:track1
 	if len(track.PPS) != 1 {
 		t.Errorf("expected 1 pps from folded line, got %d", len(track.PPS))
 	}
-	if track.Control != "rtsp://127.0.0.1:554/track1" {
+	if track.Control != "rtsp://127.0.0.1:554/live/track1" {
 		t.Errorf("unexpected control: %s", track.Control)
 	}
 }

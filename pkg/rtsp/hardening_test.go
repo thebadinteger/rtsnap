@@ -292,6 +292,85 @@ func TestDigestStaleRetry(t *testing.T) {
 	}
 }
 
+func TestNoRetryWithoutCredentials(t *testing.T) {
+	var requests int32
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		atomic.AddInt32(&requests, 1)
+		return "RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"r\", nonce=\"n\", qop=\"auth\"\r\n\r\n"
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "", "", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	res, err := client.DescribeAuth(context.Background())
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if res.StatusCode != 401 {
+		t.Fatalf("status %d, want 401", res.StatusCode)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("sent %d requests without credentials, want 1", got)
+	}
+}
+
+func TestAuthIntVector(t *testing.T) {
+	auth := NewAuth(`Digest realm="testrealm@host.com", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", qop="auth-int"`, "Mufasa", "Circle Of Life")
+	if auth == nil {
+		t.Fatal("rejected auth-int challenge")
+	}
+	auth.Cnonce = "0a4f113b"
+
+	header := auth.GenerateBody("POST", "/dir/index.html", []byte("hello"))
+	if !strings.Contains(header, "qop=auth-int") {
+		t.Fatalf("missing auth-int qop: %s", header)
+	}
+	if !strings.Contains(header, `response="b3da9049011b9dafbd8fc28b2deecc0b"`) {
+		t.Fatalf("wrong auth-int response: %s", header)
+	}
+}
+
+func TestAuthIntIgnoresBodyForAuthQop(t *testing.T) {
+	auth := NewAuth(`Digest realm="r", nonce="n", qop="auth"`, "u", "p")
+	auth.Cnonce = "fixed"
+
+	without := auth.GenerateBody("POST", "/x", nil)
+	auth.NC = 0
+	with := auth.GenerateBody("POST", "/x", []byte("body"))
+
+	if without != with {
+		t.Fatalf("auth qop must not depend on the body:\n%s\n%s", without, with)
+	}
+}
+
+func TestAuthRankMatchesNewAuth(t *testing.T) {
+	algorithms := []string{"", "MD5", "MD5-sess", "SHA-256", "SHA-256-sess", "SHA-512-256", "SHA-1"}
+	qops := []string{"", `qop="auth"`, `qop="auth-int"`, `qop="auth,auth-int"`}
+
+	for _, algo := range algorithms {
+		for _, qop := range qops {
+			header := `Digest realm="r", nonce="n"`
+			if algo != "" {
+				header += ", algorithm=" + algo
+			}
+			if qop != "" {
+				header += ", " + qop
+			}
+
+			auth := NewAuth(header, "u", "p")
+			rank := authRank(header)
+
+			if (auth != nil) != (rank != 0) {
+				t.Fatalf("%q: NewAuth nil=%v but rank=%d", header, auth == nil, rank)
+			}
+		}
+	}
+}
+
 func TestUnsupportedDigestAlgorithm(t *testing.T) {
 	cases := []string{
 		`Digest realm="r", nonce="n", algorithm=SHA-512-256`,
@@ -309,17 +388,31 @@ func TestUnsupportedDigestAlgorithm(t *testing.T) {
 	if NewAuth(`Digest realm="r", nonce="n", algorithm=MD5-sess`, "u", "p") == nil {
 		t.Fatal("rejected md5-sess")
 	}
-	if NewAuth(`Digest realm="r", nonce="n", qop="auth,auth-int"`, "u", "p") == nil {
+	// auth is preferred when both are offered
+	auth := NewAuth(`Digest realm="r", nonce="n", qop="auth,auth-int"`, "u", "p")
+	if auth == nil {
 		t.Fatal("rejected challenge offering auth")
 	}
+	if auth.Qop != "auth" {
+		t.Fatalf("qop %q, want auth", auth.Qop)
+	}
 
-	// unsupported qop degrades to a plain digest instead of being refused
-	auth := NewAuth(`Digest realm="r", nonce="n", qop="auth-int"`, "u", "p")
+	// auth-int is used when it is the only option
+	auth = NewAuth(`Digest realm="r", nonce="n", qop="auth-int"`, "u", "p")
 	if auth == nil {
-		t.Fatal("rejected digest with unsupported qop")
+		t.Fatal("rejected digest with auth-int")
+	}
+	if auth.Qop != "auth-int" {
+		t.Fatalf("qop %q, want auth-int", auth.Qop)
+	}
+
+	// an unknown qop still degrades to a plain digest
+	auth = NewAuth(`Digest realm="r", nonce="n", qop="auth-unknown"`, "u", "p")
+	if auth == nil {
+		t.Fatal("rejected digest with unknown qop")
 	}
 	if auth.Qop != "" {
-		t.Fatalf("qop not cleared: %q", auth.Qop)
+		t.Fatalf("qop not cleared for unknown value: %q", auth.Qop)
 	}
 
 	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
@@ -560,17 +653,23 @@ func TestPickAuthChallengePrefersSHA256(t *testing.T) {
 		t.Fatalf("did not prefer digest over basic: %s", got)
 	}
 
-	// a fully usable qop must win over a digest whose qop we cannot use
+	// a fully usable qop wins over auth-int
 	got = pickAuthChallenge([]string{
 		`Digest realm="r", nonce="n1", qop="auth-int"`,
 		`Digest realm="r", nonce="n2", qop="auth"`,
 	})
 	if !strings.Contains(got, `nonce="n2"`) {
-		t.Fatalf("did not prefer the usable qop: %s", got)
+		t.Fatalf("did not prefer auth over auth-int: %s", got)
+	}
+
+	// auth-int wins over basic
+	got = pickAuthChallenge([]string{`Digest realm="r", nonce="n1", qop="auth-int"`, `Basic realm="r"`})
+	if !strings.Contains(got, "auth-int") {
+		t.Fatalf("did not prefer auth-int over basic: %s", got)
 	}
 
 	// basic beats a digest with an unusable qop
-	got = pickAuthChallenge([]string{`Digest realm="r", nonce="n1", qop="auth-int"`, `Basic realm="r"`})
+	got = pickAuthChallenge([]string{`Digest realm="r", nonce="n1", qop="bogus"`, `Basic realm="r"`})
 	if !strings.Contains(got, "Basic") {
 		t.Fatalf("did not prefer basic over the unusable digest: %s", got)
 	}

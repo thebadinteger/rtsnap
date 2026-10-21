@@ -54,6 +54,14 @@ func (f *Frame) GetChromaPixel(comp int, x, y int) uint8 {
 	return f.Cr[y*f.StrideC+x]
 }
 
+func (f *Frame) SetChromaPixel(comp int, x, y int, val uint8) {
+	plane := f.Cb
+	if comp == 1 {
+		plane = f.Cr
+	}
+	plane[y*f.StrideC+x] = val
+}
+
 func (f *Frame) SetLuma16x16(mbX, mbY int, block [16][16]uint8) {
 	x0 := mbX * 16
 	y0 := mbY * 16

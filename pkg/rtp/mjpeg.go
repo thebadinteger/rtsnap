@@ -80,7 +80,13 @@ var chmAcSymbols = []byte{
 	0xf9, 0xfa,
 }
 
-func makeQuantTables(q uint8) [][]byte {
+// a quantization table and its precision bit from the rtp header
+type quantTable struct {
+	data []byte
+	prec bool
+}
+
+func makeQuantTables(q uint8) []quantTable {
 	var scale int
 	if q < 50 {
 		scale = 5000 / int(q)
@@ -88,27 +94,28 @@ func makeQuantTables(q uint8) [][]byte {
 		scale = 200 - 2*int(q)
 	}
 
-	tables := make([][]byte, 2)
-	tables[0] = make([]byte, 64)
-	tables[1] = make([]byte, 64)
+	tables := make([]quantTable, 2)
 
-	for i := 0; i < 64; i++ {
-		v := (lumaQuantizers[i]*scale + 50) / 100
-		if v > 255 {
-			v = 255
-		} else if v == 0 {
-			v = 1
+	for id := range tables {
+		base := lumaQuantizers
+		if id == 1 {
+			base = chromaQuantizers
 		}
-		tables[0][i] = byte(v)
 
-		v = (chromaQuantizers[i]*scale + 50) / 100
-		if v > 255 {
-			v = 255
-		} else if v == 0 {
-			v = 1
+		t := make([]byte, 64)
+		for i := 0; i < 64; i++ {
+			v := (base[i]*scale + 50) / 100
+			if v > 255 {
+				v = 255
+			} else if v == 0 {
+				v = 1
+			}
+			t[i] = byte(v)
 		}
-		tables[1][i] = byte(v)
+
+		tables[id] = quantTable{data: t}
 	}
+
 	return tables
 }
 
@@ -118,9 +125,8 @@ type MJPEGDepacketizer struct {
 	width          int
 	height         int
 	jpegType       uint8
-	q              uint8
 	restartInt     uint16
-	quantTables    [][]byte
+	quantTables    []quantTable
 	hasFirstPacket bool
 	lastSeq        uint16
 	hasSeq         bool
@@ -139,6 +145,15 @@ func NewMJPEGDepacketizer() *MJPEGDepacketizer {
 	return &MJPEGDepacketizer{}
 }
 
+// drop collected fragments and release their backing buffers
+func (d *MJPEGDepacketizer) dropFragments() {
+	for i := range d.fragments {
+		d.fragments[i] = nil
+	}
+	d.fragments = d.fragments[:0]
+	d.fragmentsLen = 0
+}
+
 // reassemble jpeg frame from rtp packet
 func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	buf := pkt.Payload
@@ -152,6 +167,10 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	w := int(buf[6]) * 8
 	h := int(buf[7]) * 8
 	buf = buf[8:]
+
+	if jpegType >= 128 {
+		return nil, fmt.Errorf("unsupported mjpeg type %d", jpegType)
+	}
 
 	var restartInterval uint16
 	if jpegType >= 64 {
@@ -170,12 +189,10 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	d.hasSeq = true
 
 	if offset == 0 {
-		d.fragments = d.fragments[:0]
-		d.fragmentsLen = 0
+		d.dropFragments()
 		d.width = w
 		d.height = h
 		d.jpegType = jpegType
-		d.q = q
 		d.restartInt = restartInterval
 		d.hasFirstPacket = true
 
@@ -183,23 +200,45 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 			if len(buf) < 4 {
 				return nil, fmt.Errorf("missing quant table header")
 			}
+			precision := buf[1]
 			tableLen := int(binary.BigEndian.Uint16(buf[2:4]))
 			buf = buf[4:]
-			if len(buf) < tableLen {
-				return nil, fmt.Errorf("truncated quant tables")
-			}
-			tablesData := buf[:tableLen]
-			buf = buf[tableLen:]
+			if tableLen > 0 {
+				if len(buf) < tableLen {
+					return nil, fmt.Errorf("truncated quant tables")
+				}
+				tablesData := buf[:tableLen]
+				buf = buf[tableLen:]
 
-			d.quantTables = nil
-			for len(tablesData) >= 64 {
-				t := make([]byte, 64)
-				copy(t, tablesData[:64])
-				d.quantTables = append(d.quantTables, t)
-				tablesData = tablesData[64:]
+				tables := make([]quantTable, 0, 2)
+				for id := 0; id < 2 && len(tablesData) > 0; id++ {
+					n := 64
+					if precision&(1<<uint(id)) != 0 {
+						n = 128
+					}
+					if len(tablesData) < n {
+						return nil, fmt.Errorf("truncated quant tables")
+					}
+
+					t := make([]byte, n)
+					copy(t, tablesData[:n])
+					tables = append(tables, quantTable{data: t, prec: precision&(1<<uint(id)) != 0})
+					tablesData = tablesData[n:]
+				}
+
+				d.quantTables = tables
+			} else if d.quantTables == nil {
+				return nil, fmt.Errorf("mjpeg frame without quant tables")
 			}
 		} else {
-			d.quantTables = makeQuantTables(q)
+			d.quantTables = makeQuantTables(min(max(q, 1), 99))
+		}
+
+		if len(buf) > d.maxBytes() {
+			d.dropFragments()
+			d.hasFirstPacket = false
+
+			return nil, fmt.Errorf("mjpeg frame too large")
 		}
 
 		f := make([]byte, len(buf))
@@ -208,15 +247,15 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		d.fragmentsLen = len(f)
 	} else {
 		if !d.hasFirstPacket || gap || offset != d.fragmentsLen {
-			d.fragments = d.fragments[:0]
-			d.fragmentsLen = 0
+			d.dropFragments()
 			d.hasFirstPacket = false
+
 			return nil, nil
 		}
 		if d.fragmentsLen+len(buf) > d.maxBytes() {
-			d.fragments = d.fragments[:0]
-			d.fragmentsLen = 0
+			d.dropFragments()
 			d.hasFirstPacket = false
+
 			return nil, fmt.Errorf("mjpeg frame too large")
 		}
 		f := make([]byte, len(buf))
@@ -236,14 +275,22 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	if len(d.quantTables) > 0 {
 		tables := d.quantTables
 		if len(tables) == 1 {
-			tables = [][]byte{tables[0], tables[0]}
+			tables = []quantTable{tables[0], tables[0]}
 		}
 
-		dqtLen := 2 + len(tables)*(1+64)
+		dqtLen := 2
+		for _, t := range tables {
+			dqtLen += 1 + len(t.data)
+		}
+
 		out = append(out, 0xFF, 0xDB, byte(dqtLen>>8), byte(dqtLen))
-		for id, tbl := range tables {
-			out = append(out, byte(id))
-			out = append(out, tbl...)
+		for id, t := range tables {
+			flags := byte(id)
+			if t.prec {
+				flags |= 0x10
+			}
+			out = append(out, flags)
+			out = append(out, t.data...)
 		}
 	}
 
@@ -254,10 +301,13 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 	out = append(out, byte(d.width>>8), byte(d.width))
 	out = append(out, 0x03)
 
+	// restart marker types 64-127 mirror the sampling of types 0-63
+	sampling := d.jpegType & 0x3f
+
 	subH, subV := byte(1), byte(1)
-	if d.jpegType == 0 {
+	if sampling == 0 {
 		subH = 2
-	} else if d.jpegType == 1 {
+	} else if sampling == 1 {
 		subH = 2
 		subV = 2
 	}
@@ -289,12 +339,19 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		out = append(out, f...)
 	}
 
+	// scan data may be zero padded or carry trailing bytes after the eoi
+	for i := len(out) - 2; i >= 2; i-- {
+		if out[i] == 0xFF && out[i+1] == 0xD9 {
+			out = out[:i+2]
+
+			break
+		}
+	}
 	if len(out) < 2 || out[len(out)-2] != 0xFF || out[len(out)-1] != 0xD9 {
 		out = append(out, 0xFF, 0xD9)
 	}
 
-	d.fragments = d.fragments[:0]
-	d.fragmentsLen = 0
+	d.dropFragments()
 	d.hasFirstPacket = false
 
 	return out, nil

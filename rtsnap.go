@@ -206,7 +206,7 @@ type seqTracker struct {
 	set  bool
 }
 
-// returns false for duplicate or late packets
+// returns false for duplicate packets, gap signals a break in the sequence
 func (s *seqTracker) accept(seq uint16) (gap, ok bool) {
 	if s.set && seq == s.last {
 		return false, false
@@ -434,6 +434,8 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			continue
 		}
 
+		sawIRAP := false
+
 		for _, nal := range nalus {
 			u, ok := h265.ParseNAL(nal)
 			if !ok {
@@ -447,6 +449,7 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 
 			if u.Type.IsIRAP() {
 				seenIRAP = true
+				sawIRAP = true
 			}
 
 			pics, err := safely(func() ([]*h265.Picture, error) { return dec.DecodeNAL(u) })
@@ -454,35 +457,41 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 				reset()
 				continue
 			}
-			if seenIRAP {
-				for _, p := range pics {
-					if img := p.Image(); img != nil {
-						if p.Corrupt {
-							if fallback == nil {
-								fallback = img
-							}
-							continue
-						}
-						return img, nil
-					}
-				}
+			for _, p := range collectImage(pics, &fallback, seenIRAP) {
+				return p, nil
 			}
+		}
 
-			// flush only complete pictures
-			if u.Type.IsIRAP() && pkt.Marker {
-				flush, _ := safely(func() ([]*h265.Picture, error) { return dec.Flush(), nil })
-				for _, p := range flush {
-					if img := p.Image(); img != nil {
-						if p.Corrupt {
-							if fallback == nil {
-								fallback = img
-							}
-							continue
-						}
-						return img, nil
-					}
-				}
+		// flush after the whole packet so the picture can finish inside it
+		if pkt.Marker && sawIRAP {
+			flush, _ := safely(func() ([]*h265.Picture, error) { return dec.Flush(), nil })
+			for _, p := range collectImage(flush, &fallback, seenIRAP) {
+				return p, nil
 			}
 		}
 	}
+}
+
+func collectImage(pics []*h265.Picture, fallback *image.Image, emit bool) []image.Image {
+	var out []image.Image
+
+	for _, p := range pics {
+		var img image.Image
+
+		if emit {
+			img = p.ImageCopy()
+
+			if p.Corrupt {
+				if *fallback == nil {
+					*fallback = img
+				}
+			} else {
+				out = append(out, img)
+			}
+		}
+
+		p.Release()
+	}
+
+	return out
 }

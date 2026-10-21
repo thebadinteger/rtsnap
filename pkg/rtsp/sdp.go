@@ -75,6 +75,28 @@ func resolveURL(base, ref string) string {
 	return bu.ResolveReference(ru).String()
 }
 
+// insert a relative control attribute at the end of the base url, after the query when present
+func joinControlURL(base, control string) string {
+	if control == "" || control == "*" {
+		return base
+	}
+	if strings.HasPrefix(control, "rtsp://") || strings.HasPrefix(control, "rtsps://") {
+		return control
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	if strings.HasPrefix(control, "/") {
+		root := url.URL{Scheme: u.Scheme, Host: u.Host}
+		return root.String() + control
+	}
+	if control[0] != '?' && !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+	return base + control
+}
+
 type sdpSection struct {
 	payloads []uint8
 	control  string
@@ -88,6 +110,7 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 	var sections []sdpSection
 	var curSection *sdpSection
 	globalControl := ""
+	sawMedia := false
 
 	for _, line := range lines {
 		if len(line) < 2 || line[1] != '=' {
@@ -98,8 +121,13 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 
 		switch prefix {
 		case 'm':
+			sawMedia = true
 			parts := strings.Fields(val)
-			if len(parts) > 0 && strings.EqualFold(parts[0], "video") {
+			if len(parts) < 4 {
+				curSection = nil
+				continue
+			}
+			if strings.EqualFold(parts[0], "video") {
 				sec := sdpSection{
 					rtpmap: make(map[uint8]string),
 					fmtp:   make(map[uint8]map[string]string),
@@ -123,7 +151,8 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 			attrVal := val[colon+1:]
 
 			if curSection == nil {
-				if attrName == "control" {
+				// a session level control attribute precedes every m line
+				if !sawMedia && attrName == "control" {
 					globalControl = attrVal
 				}
 				continue
@@ -150,12 +179,13 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 
 	var tracks []*MediaTrack
 
+	base := baseURL
+	if globalControl != "" && globalControl != "*" {
+		base = resolveURL(baseURL, globalControl)
+	}
+
 	for _, sec := range sections {
-		ctrl := sec.control
-		if ctrl == "" {
-			ctrl = globalControl
-		}
-		resolvedControl := resolveURL(baseURL, ctrl)
+		ctrl := joinControlURL(base, sec.control)
 
 		for _, pt := range sec.payloads {
 			var codec string
@@ -201,7 +231,7 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 				Codec:       codec,
 				PayloadType: pt,
 				ClockRate:   rate,
-				Control:     resolvedControl,
+				Control:     ctrl,
 				Fmtp:        sec.fmtp[pt],
 			}
 

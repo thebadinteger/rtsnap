@@ -52,6 +52,11 @@ type MBData struct {
 	DeblockIDC   uint32
 	DeblockAlpha int
 	DeblockBeta  int
+
+	IsPCM   bool
+	PCMLuma [256]uint8
+	PCMCb   [256]uint8
+	PCMCr   [256]uint8
 }
 
 type SliceContext struct {

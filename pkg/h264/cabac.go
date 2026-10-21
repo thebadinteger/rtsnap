@@ -120,6 +120,20 @@ func (d *CabacDecoder) BytePos() int {
 	return d.pos
 }
 
+// reinitialize the engine after pcm bytes, same as a fresh slice segment
+func (d *CabacDecoder) reinit(pos int) error {
+	if pos < 0 || pos+2 > len(d.data) {
+		return fmt.Errorf("cabac reinit out of range at %d", pos)
+	}
+	d.codIOffset = uint16(d.data[pos])<<1 | uint16(d.data[pos+1]>>7)
+	d.codIRange = 510
+	d.pos = pos + 2
+	d.bitsLeft = 7
+	d.overread = false
+
+	return nil
+}
+
 func (d *CabacDecoder) AlignToByte() {
 	d.bitsLeft = 0
 }
