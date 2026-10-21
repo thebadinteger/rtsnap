@@ -22,6 +22,7 @@ type Client struct {
 	cseq       int
 	session    string
 	auth       *Auth
+	authTries  int
 	Tracks     []*MediaTrack
 	Track      *MediaTrack
 	Transport  Transport
@@ -32,13 +33,39 @@ type Client struct {
 	udpRTP     net.PacketConn
 	udpRTCP    net.PacketConn
 	udpBuf     []byte
+	udpRTPIP   net.IP
+	remoteIP   net.IP
+	tunnel     bool
+}
+
+// dial settings overriding defaults
+type DialConfig struct {
+	TLSConfig *tls.Config
+	Tunnel    bool
 }
 
 // open tcp connection to rtsp server
 func Dial(ctx context.Context, rtspURL string, user, pass string, tlsSkipVerify bool) (*Client, error) {
+	return DialWithConfig(ctx, rtspURL, user, pass, &DialConfig{
+		TLSConfig: &tls.Config{InsecureSkipVerify: tlsSkipVerify},
+	})
+}
+
+// open connection with explicit tls and tunnel settings
+func DialWithConfig(ctx context.Context, rtspURL string, user, pass string, cfg *DialConfig) (*Client, error) {
 	u, err := url.Parse(rtspURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid rtsp url: %w", err)
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
+	case "rtsp", "rtsps", "http", "https":
+	default:
+		return nil, fmt.Errorf("unsupported url scheme: %s", u.Scheme)
+	}
+	if cfg == nil {
+		cfg = &DialConfig{}
 	}
 
 	if u.User != nil {
@@ -50,51 +77,112 @@ func Dial(ctx context.Context, rtspURL string, user, pass string, tlsSkipVerify 
 		}
 	}
 
+	secure := scheme == "rtsps" || scheme == "https"
+	tunnel := cfg.Tunnel || scheme == "http" || scheme == "https"
+
+	reqScheme := scheme
+	switch scheme {
+	case "http":
+		reqScheme = "rtsp"
+	case "https":
+		reqScheme = "rtsps"
+	}
+
 	cleanU := *u
 	cleanU.User = nil
+	cleanU.Scheme = reqScheme
 	cleanURL := cleanU.String()
 
-	host := u.Host
-	if !strings.Contains(host, ":") {
-		if strings.EqualFold(u.Scheme, "rtsps") {
-			host += ":322"
-		} else {
-			host += ":554"
-		}
-	}
+	addr := dialAddr(u, scheme)
+	tlsCfg := tlsClientConfig(cfg.TLSConfig, u.Hostname(), secure)
 
-	var d net.Dialer
 	var conn net.Conn
-	if strings.EqualFold(u.Scheme, "rtsps") {
-		raw, err := d.DialContext(ctx, "tcp", host)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to %s: %w", host, err)
-		}
-		tc := tls.Client(raw, &tls.Config{
-			InsecureSkipVerify: tlsSkipVerify,
-			ServerName:         u.Hostname(),
-		})
-		if err := tc.HandshakeContext(ctx); err != nil {
-			_ = raw.Close()
-			return nil, fmt.Errorf("tls handshake with %s: %w", host, err)
-		}
-		conn = tc
+	if tunnel {
+		conn, err = dialHTTPTunnel(ctx, addr, secure, tlsCfg, tunnelPath(u))
 	} else {
-		conn, err = d.DialContext(ctx, "tcp", host)
+		conn, err = dialSocket(ctx, addr, secure, tlsCfg)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", host, err)
+		return nil, err
 	}
 
-	return &Client{
+	c := &Client{
 		conn:       conn,
 		reader:     bufio.NewReaderSize(conn, 64*1024),
 		rawURL:     rtspURL,
 		cleanURL:   cleanURL,
 		user:       user,
 		pass:       pass,
+		tunnel:     tunnel,
 		rtpChannel: 0,
-	}, nil
+	}
+	if ta, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		c.remoteIP = ta.IP
+	}
+	return c, nil
+}
+
+// address with default port for every supported scheme
+func dialAddr(u *url.URL, scheme string) string {
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "rtsps":
+			port = "322"
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			port = "554"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
+func tlsClientConfig(base *tls.Config, serverName string, secure bool) *tls.Config {
+	if !secure {
+		return nil
+	}
+	var cfg *tls.Config
+	if base != nil {
+		cfg = base.Clone()
+	} else {
+		cfg = &tls.Config{}
+	}
+	if cfg.ServerName == "" {
+		cfg.ServerName = serverName
+	}
+	return cfg
+}
+
+func tunnelPath(u *url.URL) string {
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
+	if u.RawQuery != "" {
+		path += "?" + u.RawQuery
+	}
+	return path
+}
+
+// open tcp or tls socket
+func dialSocket(ctx context.Context, addr string, secure bool, cfg *tls.Config) (net.Conn, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
+	}
+	if !secure {
+		return conn, nil
+	}
+	tc := tls.Client(conn, cfg)
+	if err := tc.HandshakeContext(ctx); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("tls handshake with %s: %w", addr, err)
+	}
+	return tc, nil
 }
 
 func (c *Client) nextCSeq() int {
@@ -151,7 +239,7 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 	return res, err
 }
 
-// send request with auth retry on 401
+// send request with auth retry on 401 and stale nonce
 func (c *Client) roundTrip(ctx context.Context, req *Request) (*Response, error) {
 	res, err := c.send(ctx, req)
 	if err != nil {
@@ -160,57 +248,139 @@ func (c *Client) roundTrip(ctx context.Context, req *Request) (*Response, error)
 	if res.StatusCode == 401 {
 		return c.authRetry(ctx, req, res)
 	}
+	c.authTries = 0
 	return res, nil
 }
 
-// rebuild request with credentials once
+// raw round trip without automatic auth retry
+func (c *Client) rawRoundTrip(ctx context.Context, req *Request) (*Response, error) {
+	return c.send(ctx, req)
+}
+
+// rebuild request with credentials when challenged or stale
 func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) (*Response, error) {
-	if c.auth != nil {
-		return unauth, nil
-	}
-	wwwAuth := unauth.Header("WWW-Authenticate")
-	if wwwAuth == "" {
+	values := unauth.Values("WWW-Authenticate")
+	if len(values) == 0 {
 		return nil, fmt.Errorf("unauthorized without www-authenticate header")
 	}
-	c.auth = NewAuth(wwwAuth, c.user, c.pass)
-	if c.auth == nil {
-		return nil, fmt.Errorf("unsupported auth header: %s", wwwAuth)
+
+	stale := false
+	for _, v := range values {
+		if staleChallenge(v) {
+			stale = true
+			break
+		}
+	}
+	if c.auth != nil && !stale {
+		return unauth, nil
+	}
+	if c.authTries >= 2 {
+		return unauth, nil
+	}
+
+	challenge := pickAuthChallenge(values)
+	if challenge == "" {
+		return nil, fmt.Errorf("%w: no supported challenge", ErrUnsupportedAuth)
+	}
+	auth := NewAuth(challenge, c.user, c.pass)
+	if auth == nil {
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedAuth, challenge)
+	}
+	c.auth = auth
+	c.authTries++
+
+	// body was already sent once, send it again on the retry
+	if len(req.Body) > 0 {
+		req = &Request{Method: req.Method, URI: req.URI, Headers: req.Headers, Body: append([]byte(nil), req.Body...)}
 	}
 	return c.send(ctx, req)
 }
 
 // fetch stream description
 func (c *Client) Describe(ctx context.Context) error {
-	req := &Request{
-		Method: "DESCRIBE",
-		URI:    c.cleanURL,
-		Headers: map[string]string{
-			"Accept": "application/sdp",
-		},
-	}
-
-	res, err := c.roundTrip(ctx, req)
+	res, err := c.DescribeAuth(ctx)
 	if err != nil {
-		return fmt.Errorf("describe failed: %w", err)
+		return err
 	}
-
 	if res.StatusCode != 200 {
-		return fmt.Errorf("describe rejected: %d %s", res.StatusCode, res.StatusMessage)
+		return newStatusError("describe", res)
+	}
+	return nil
+}
+
+// describe returning the response even for error statuses, no auth retry
+func (c *Client) DescribeRaw(ctx context.Context) (*Response, error) {
+	res, err := c.sendMethod(ctx, "DESCRIBE", c.cleanURL, map[string]string{"Accept": "application/sdp"})
+	if err != nil {
+		return nil, fmt.Errorf("describe failed: %w", err)
+	}
+	return c.acceptDescribe(res)
+}
+
+// describe with credentials when challenged
+func (c *Client) DescribeAuth(ctx context.Context) (*Response, error) {
+	res, err := c.Do(ctx, "DESCRIBE", c.cleanURL, map[string]string{"Accept": "application/sdp"}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("describe failed: %w", err)
+	}
+	return c.acceptDescribe(res)
+}
+
+// parse sdp of a successful describe
+func (c *Client) acceptDescribe(res *Response) (*Response, error) {
+	if res.StatusCode != 200 {
+		return res, nil
 	}
 
 	tracks, err := ParseSDP(res.Body, c.cleanURL)
 	if err != nil {
-		return fmt.Errorf("parse sdp: %w", err)
+		return res, fmt.Errorf("parse sdp: %w", err)
 	}
 	c.Tracks = tracks
 	c.Track, _ = SelectTrack(tracks, "")
+	return res, nil
+}
+
+// send a request with auth and session handling
+func (c *Client) Do(ctx context.Context, method, uri string, headers map[string]string, body []byte) (*Response, error) {
+	req := &Request{
+		Method:  method,
+		URI:     uri,
+		Headers: headers,
+		Body:    body,
+	}
+	return c.roundTrip(ctx, req)
+}
+
+// send a request without automatic auth retry
+func (c *Client) sendMethod(ctx context.Context, method, uri string, headers map[string]string) (*Response, error) {
+	req := &Request{
+		Method:  method,
+		URI:     uri,
+		Headers: headers,
+	}
+	return c.rawRoundTrip(ctx, req)
+}
+
+// negotiate media transport
+func (c *Client) Setup(ctx context.Context) error {
+	res, err := c.SetupRaw(ctx)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != 200 {
+		return newStatusError("setup", res)
+	}
 	return nil
 }
 
-// negotiate transport with fallback
-func (c *Client) Setup(ctx context.Context) error {
+// setup returning the final response even for error statuses
+func (c *Client) SetupRaw(ctx context.Context) (*Response, error) {
 	if c.Track == nil {
-		return fmt.Errorf("no track available for setup")
+		return nil, fmt.Errorf("no track available for setup")
+	}
+	if c.tunnel {
+		return c.setupTCP(ctx)
 	}
 
 	t := c.Transport
@@ -219,12 +389,15 @@ func (c *Client) Setup(ctx context.Context) error {
 	}
 
 	if t == TransportUDP || t == TransportAuto {
-		if err := c.setupUDP(ctx); err != nil {
-			if t != TransportAuto {
-				return err
+		res, err := c.setupUDP(ctx)
+		if err == nil && res.StatusCode == 200 {
+			return res, nil
+		}
+		if t == TransportUDP {
+			if err != nil {
+				return nil, err
 			}
-		} else {
-			return nil
+			return res, nil
 		}
 	}
 
@@ -293,11 +466,36 @@ func udpServerPort(trans string) int {
 	return 0
 }
 
+// source address announced by the server, nil if absent
+func transportSource(trans string) net.IP {
+	for _, part := range strings.Split(trans, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "source=") {
+			value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(part, "source=")), `"`)
+			value = strings.Trim(value, "[]")
+			return net.ParseIP(value)
+		}
+	}
+	return nil
+}
+
+// accept rtp only from the negotiated peer
+func (c *Client) udpSourceOK(addr net.Addr) bool {
+	if c.udpRTPIP == nil {
+		return true
+	}
+	ua, ok := addr.(*net.UDPAddr)
+	if !ok {
+		return false
+	}
+	return ua.IP.Equal(c.udpRTPIP)
+}
+
 // negotiate udp unicast transport
-func (c *Client) setupUDP(ctx context.Context) error {
+func (c *Client) setupUDP(ctx context.Context) (*Response, error) {
 	rtpConn, rtcpConn, rtpPort, rtcpPort, err := listenPair()
 	if err != nil {
-		return fmt.Errorf("setup udp listen: %w", err)
+		return nil, fmt.Errorf("setup udp listen: %w", err)
 	}
 
 	req := &Request{
@@ -312,28 +510,32 @@ func (c *Client) setupUDP(ctx context.Context) error {
 	if err != nil {
 		_ = rtpConn.Close()
 		_ = rtcpConn.Close()
-		return fmt.Errorf("setup failed: %w", err)
+		return nil, fmt.Errorf("setup failed: %w", err)
 	}
 	if res.StatusCode != 200 {
 		_ = rtpConn.Close()
 		_ = rtcpConn.Close()
-		return fmt.Errorf("setup rejected: %d %s", res.StatusCode, res.StatusMessage)
+		return res, nil
 	}
 	if udpServerPort(res.Header("Transport")) == 0 {
 		_ = rtpConn.Close()
 		_ = rtcpConn.Close()
-		return fmt.Errorf("setup udp: server did not provide server_port")
+		return nil, fmt.Errorf("setup udp: server did not provide server_port")
 	}
 
 	c.storeSession(res)
 	c.udpRTP = rtpConn
 	c.udpRTCP = rtcpConn
 	c.udp = true
-	return nil
+	c.udpRTPIP = transportSource(res.Header("Transport"))
+	if c.udpRTPIP == nil {
+		c.udpRTPIP = c.remoteIP
+	}
+	return res, nil
 }
 
 // negotiate tcp interleaved transport
-func (c *Client) setupTCP(ctx context.Context) error {
+func (c *Client) setupTCP(ctx context.Context) (*Response, error) {
 	req := &Request{
 		Method: "SETUP",
 		URI:    c.Track.Control,
@@ -344,10 +546,10 @@ func (c *Client) setupTCP(ctx context.Context) error {
 
 	res, err := c.roundTrip(ctx, req)
 	if err != nil {
-		return fmt.Errorf("setup failed: %w", err)
+		return nil, fmt.Errorf("setup failed: %w", err)
 	}
 	if res.StatusCode != 200 {
-		return fmt.Errorf("setup rejected: %d %s", res.StatusCode, res.StatusMessage)
+		return res, nil
 	}
 
 	c.storeSession(res)
@@ -367,27 +569,28 @@ func (c *Client) setupTCP(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	return res, nil
 }
 
 // start stream playback
 func (c *Client) Play(ctx context.Context) error {
-	req := &Request{
-		Method: "PLAY",
-		URI:    c.cleanURL,
-		Headers: map[string]string{
-			"Range": "npt=0.000-",
-		},
-	}
-
-	res, err := c.roundTrip(ctx, req)
+	res, err := c.PlayRaw(ctx)
 	if err != nil {
-		return fmt.Errorf("play failed: %w", err)
+		return err
 	}
 	if res.StatusCode != 200 {
-		return fmt.Errorf("play rejected: %d %s", res.StatusCode, res.StatusMessage)
+		return newStatusError("play", res)
 	}
 	return nil
+}
+
+// play returning the response even for error statuses
+func (c *Client) PlayRaw(ctx context.Context) (*Response, error) {
+	res, err := c.Do(ctx, "PLAY", c.cleanURL, map[string]string{"Range": "npt=0.000-"}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("play failed: %w", err)
+	}
+	return res, nil
 }
 
 // read next interleaved frame
@@ -463,14 +666,14 @@ func (c *Client) readUDP(ctx context.Context) (*Frame, error) {
 		default:
 		}
 
-		n, _, err := c.udpRTP.ReadFrom(c.udpBuf)
+		n, addr, err := c.udpRTP.ReadFrom(c.udpBuf)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			return nil, err
 		}
-		if n <= 0 {
+		if n <= 0 || !c.udpSourceOK(addr) {
 			continue
 		}
 

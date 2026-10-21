@@ -25,6 +25,7 @@
 - Basic and Digest auth support
 - Transports: `TCP interleaved, UDP unicast` 
 - Auto fallback with packet loss recovery
+- HTTP/HTTPS tunneling for cameras/servers behind web ports
 
 ## Start  
 Install the library:  
@@ -129,6 +130,8 @@ Convenience helper that captures a frame and returns JPEG bytes. For `H.264`/`H.
 func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, error)
 ```
 Connects to the RTSP stream and queries available video tracks (codec, payload type, clock rate, control URL) without initiating streaming or frame decoding  
+### Low-level responses
+`pkg/rtsp` also exposes `DescribeRaw`, `SetupRaw`, `PlayRaw`, and `Do`, which return the `*rtsp.Response` even for non-success statuses. The regular methods return `*rtsp.StatusError` (code, status, all response headers, body) so scanners can inspect `401`, `404`, `503` and multiple `WWW-Authenticate` values without parsing strings  
 ### Functional Options  
 - `WithAuth(username, password string)`: Sets credentials for HTTP Basic or Digest authentication
 - `WithTimeout(d time.Duration)`: Sets a client-side timeout that bounds the total operation duration
@@ -139,6 +142,8 @@ Connects to the RTSP stream and queries available video tracks (codec, payload t
 - `WithUserAgent(ua string)`: Overrides the `User-Agent` header (default `rtsnap`), some picky cameras/servers require values like `VLC/3.0.16`
 - `WithDebugFunc(fn func(string))`: Receives raw RTSP request/response text as it happens
 - `WithTLSVerify()`: Enables TLS certificate verification for `rtsps` connections (default is insecure)
+- `WithTLSConfig(cfg *tls.Config)`: Uses a custom TLS configuration for `rtsps` and `https`
+- `WithTunnel()`: Wraps RTSP into an HTTP tunnel; `http://` and `https://` URLs enable it automatically
 
 ## Codecs
 
@@ -185,8 +190,8 @@ rtsnap/
 - tests/ # test suite
 ```
 
-Transports: TCP interleaved (default), UDP unicast, auto UDP with TCP fallback  
-`rtsps` skips TLS certificate verification by default because cameras usually use self-signed certificates, but it can be enabled via `WithTLSVerify()`
+Transports: TCP interleaved (default), UDP unicast, auto UDP with TCP fallback, HTTP/HTTPS tunnel  
+`rtsps` skips TLS certificate verification by default because cameras usually use self-signed certificates, but it can be enabled via `WithTLSVerify()` or overridden with `WithTLSConfig()`
 
 ## Documentation
 Docs live on **[pkg.go.dev/github.com/thebadinteger/rtsnap](https://pkg.go.dev/github.com/thebadinteger/rtsnap)**

@@ -76,20 +76,63 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 		return nil
 	}
 
-	a := &Auth{
+	algo := strings.ToUpper(strings.TrimSpace(params["algorithm"]))
+	switch algo {
+	case "":
+		algo = "MD5"
+	case "MD5", "MD5-SESS", "SHA-256", "SHA-256-SESS":
+	default:
+		return nil
+	}
+
+	// only qop auth is implemented, refuse anything else explicitly
+	qop := strings.TrimSpace(params["qop"])
+	if qop != "" {
+		supported := false
+		for _, v := range strings.Split(qop, ",") {
+			if strings.EqualFold(strings.TrimSpace(v), "auth") {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return nil
+		}
+	}
+
+	return &Auth{
 		Username: username,
 		Password: password,
 		Method:   scheme,
 		Realm:    params["realm"],
 		Nonce:    params["nonce"],
-		Qop:      params["qop"],
+		Qop:      qop,
 		Opaque:   params["opaque"],
-		Algo:     strings.ToUpper(params["algorithm"]),
+		Algo:     algo,
 	}
-	if a.Algo == "" {
-		a.Algo = "MD5"
+}
+
+// prefer digest when the server offers several challenges
+func pickAuthChallenge(values []string) string {
+	basic := ""
+	for _, v := range values {
+		params := parseAuthHeader(v)
+		switch params["_scheme"] {
+		case "digest":
+			return v
+		case "basic":
+			if basic == "" {
+				basic = v
+			}
+		}
 	}
-	return a
+	return basic
+}
+
+// server asks to repeat auth with a fresh nonce
+func staleChallenge(header string) bool {
+	params := parseAuthHeader(header)
+	return strings.EqualFold(strings.TrimSpace(params["stale"]), "true")
 }
 
 func (a *Auth) hash(data string) string {

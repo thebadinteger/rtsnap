@@ -50,20 +50,46 @@ func (r *Request) Write(w io.Writer) error {
 type Response struct {
 	StatusCode    int
 	StatusMessage string
-	Headers       map[string]string
-	Body          []byte
+	// first value of each header, kept for compatibility
+	Headers map[string]string
+	// every value of each header in arrival order
+	HeaderValues map[string][]string
+	Body         []byte
 }
 
+// first value of a header
 func (r *Response) Header(key string) string {
-	if r.Headers == nil {
+	values := r.Values(key)
+	if len(values) == 0 {
 		return ""
 	}
-	for k, v := range r.Headers {
+	return values[0]
+}
+
+// every value of a header
+func (r *Response) Values(key string) []string {
+	for k, v := range r.HeaderValues {
 		if strings.EqualFold(k, key) {
 			return v
 		}
 	}
-	return ""
+	for k, v := range r.Headers {
+		if strings.EqualFold(k, key) {
+			return []string{v}
+		}
+	}
+	return nil
+}
+
+// add header value preserving duplicates and original case
+func addHeaderValue(values map[string][]string, key, value string) {
+	for k := range values {
+		if strings.EqualFold(k, key) {
+			values[k] = append(values[k], value)
+			return
+		}
+	}
+	values[key] = []string{value}
 }
 
 // read one crlf line with a hard size cap
@@ -94,6 +120,9 @@ func readResponse(br *bufio.Reader) (*Response, string, error) {
 	if len(parts) < 2 {
 		return nil, "", fmt.Errorf("malformed status line: %s", line)
 	}
+	if !strings.HasPrefix(parts[0], "RTSP/") {
+		return nil, "", fmt.Errorf("not an rtsp response: %s", line)
+	}
 	code, err := strconv.Atoi(parts[1])
 	if err != nil {
 		return nil, "", fmt.Errorf("invalid status code: %s", parts[1])
@@ -103,7 +132,7 @@ func readResponse(br *bufio.Reader) (*Response, string, error) {
 		msg = parts[2]
 	}
 
-	headers := make(map[string]string)
+	values := make(map[string][]string)
 	for n := 0; ; n++ {
 		if n > maxHeaderLines {
 			return nil, "", fmt.Errorf("too many response headers")
@@ -121,14 +150,20 @@ func readResponse(br *bufio.Reader) (*Response, string, error) {
 		if colon > 0 {
 			k := strings.TrimSpace(hline[:colon])
 			v := strings.TrimSpace(hline[colon+1:])
-			headers[k] = v
+			addHeaderValue(values, k, v)
 		}
+	}
+
+	headers := make(map[string]string, len(values))
+	for k, v := range values {
+		headers[k] = v[0]
 	}
 
 	res := &Response{
 		StatusCode:    code,
 		StatusMessage: msg,
 		Headers:       headers,
+		HeaderValues:  values,
 	}
 
 	clStr := res.Header("Content-Length")

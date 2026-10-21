@@ -1,6 +1,7 @@
 package rtsnap
 
 import (
+	"crypto/tls"
 	"time"
 
 	"github.com/thebadinteger/rtsnap/pkg/rtsp"
@@ -36,6 +37,8 @@ type Options struct {
 	UserAgent string
 	DebugFunc func(string)
 	TLSVerify bool
+	TLSConfig *tls.Config
+	Tunnel    bool
 }
 
 type Option func(*Options)
@@ -101,5 +104,19 @@ func WithTransport(t Transport) Option {
 func WithTLSVerify() Option {
 	return func(o *Options) {
 		o.TLSVerify = true
+	}
+}
+
+// use a custom tls configuration for rtsps and https
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(o *Options) {
+		o.TLSConfig = cfg
+	}
+}
+
+// wrap rtsp into an http tunnel
+func WithTunnel() Option {
+	return func(o *Options) {
+		o.Tunnel = true
 	}
 }

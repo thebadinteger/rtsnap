@@ -3,6 +3,7 @@ package rtsnap
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -127,7 +128,10 @@ func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Conte
 		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
 	}
 
-	client, err := rtsp.Dial(ctx, rtspURL, o.Username, o.Password, !o.TLSVerify)
+	client, err := rtsp.DialWithConfig(ctx, rtspURL, o.Username, o.Password, &rtsp.DialConfig{
+		TLSConfig: connectTLSConfig(o),
+		Tunnel:    o.Tunnel,
+	})
 	if err != nil {
 		cancel()
 		return nil, nil, o, nil, err
@@ -144,6 +148,17 @@ func connect(ctx context.Context, rtspURL string, opts ...Option) (context.Conte
 	}
 
 	return ctx, client, o, cancel, nil
+}
+
+// tls settings derived from options
+func connectTLSConfig(o Options) *tls.Config {
+	if o.TLSConfig != nil {
+		return o.TLSConfig
+	}
+	if !o.TLSVerify {
+		return &tls.Config{InsecureSkipVerify: true}
+	}
+	return nil
 }
 
 // select track and start playback

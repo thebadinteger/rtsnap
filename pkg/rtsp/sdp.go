@@ -245,7 +245,7 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 	}
 
 	if len(tracks) == 0 {
-		return nil, fmt.Errorf("no video tracks found in sdp")
+		return nil, ErrNoMedia
 	}
 
 	return tracks, nil
