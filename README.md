@@ -13,6 +13,7 @@
 - [Examples](#examples)
 - [API](#api)
 - [Codecs](#codecs)
+- [Limitations](#limitations)
 - [Authentication](#authentication)
 - [Specifications](#specifications)
 - [Architecture](#architecture)
@@ -152,9 +153,17 @@ Description helpers differ on purpose: `Describe` retries with the configured cr
 
 | Codec | RFC | Profiles / Capabilities | Output Image Type | Documentation |
 |---|---|---|---|---|
-| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, 4x4 & 8x8 intra, deblocking | `*image.YCbCr` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
+| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, I_PCM, 4x4 & 8x8 intra, deblocking, scaling matrices | `*image.YCbCr` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
 | **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32, SIMD kernels (AVX2/NEON/RVV) | `*image.YCbCr` / `image.Image` | [pkg/h265](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h265) |
 | **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables | `*image.YCbCr` / `*image.Gray` | [pkg/mjpeg](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/mjpeg) |
+
+## Limitations
+- Video only: audio tracks are ignored, snapshots wait for the first decodable key frame
+- H.264 decoding covers the IDR/key frame only (no P/B), output is 8-bit 4:2:0
+- H.265 decodes the full GOP including P/B, supports 8-10 bit and 4:2:0 / 4:2:2 / 4:4:4, `Image()` downshifts deep pictures to 8 bit
+- UDP transport filters RTP by the negotiated source IP, RTCP is ignored
+- Interleaved RTP/RTCP frames that arrive while an RTSP response is pending are not buffered
+- TLS verification is off by default (self-signed media servers), enable it with `WithTLSVerify()`
 
 ## Authentication
 1. **Basic Authentication (RFC 7617)**: Encoded with standard base64 credentials

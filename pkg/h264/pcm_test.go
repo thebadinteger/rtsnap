@@ -128,6 +128,77 @@ func TestDecodeIDRPCMCAVLC(t *testing.T) {
 	}
 }
 
+// idr with a pcm macroblock followed by a regular i16x16 macroblock, this
+// catches a broken stream position after pcm
+func pcmThenIntraIDR() []byte {
+	w := &spsBitWriter{}
+	w.ue(0) // first mb
+	w.ue(7) // slice type i
+	w.ue(0) // pps id
+	w.u(0, 4)
+	w.ue(0)  // idr pic id
+	w.bit(0) // no output of prior pics
+	w.bit(0) // long term reference
+	w.ue(0)  // slice qp delta
+
+	// mb 0: pcm
+	w.ue(25)
+	w.bit(1)
+	for w.nbit != 0 {
+		w.bit(0)
+	}
+	for i := range 256 {
+		w.buf = append(w.buf, byte(i%250+1))
+	}
+	for i := range 64 {
+		w.buf = append(w.buf, byte(i+1))
+	}
+	for i := range 64 {
+		w.buf = append(w.buf, byte(i+31))
+	}
+
+	// mb 1: i16x16 dc prediction with no residual blocks
+	w.ue(3) // mb type, intra 16x16 with cbp 0
+	w.ue(0) // chroma pred mode dc
+	w.ue(0) // mb qp delta
+	w.bit(1)
+
+	w.bit(1)
+	for w.nbit != 0 {
+		w.bit(0)
+	}
+
+	return append([]byte{0x65}, w.bytes()...)
+}
+
+func TestDecodeIDRPCMThenIntra(t *testing.T) {
+	d := New()
+
+	if _, err := d.DecodeNALUs([][]byte{pcmSPS()}); err != nil {
+		t.Fatalf("sps: %v", err)
+	}
+	if _, err := d.DecodeNALUs([][]byte{pcmPPS()}); err != nil {
+		t.Fatalf("pps: %v", err)
+	}
+
+	f, err := d.DecodeNALUs([][]byte{pcmThenIntraIDR()})
+	if err != nil {
+		t.Fatalf("idr: %v", err)
+	}
+	if f == nil {
+		t.Fatal("no frame")
+	}
+
+	// pcm macroblock samples
+	if got := f.GetLumaPixel(0, 0); got != 1 {
+		t.Errorf("y(0,0) = %d, want 1", got)
+	}
+
+	if got := f.GetLumaPixel(16, 8); got == 0 {
+		t.Errorf("y(16,8) is zero, the intra mb was not decoded after pcm")
+	}
+}
+
 func TestDecodeIPCMCABAC(t *testing.T) {
 	sc := &SliceContext{
 		ChromaArrayType: 1,

@@ -75,6 +75,7 @@ func resolveURL(base, ref string) string {
 	return bu.ResolveReference(ru).String()
 }
 
+// append relative control after the base path or query
 func joinControlURL(base, control string) string {
 	if control == "" || control == "*" {
 		return base

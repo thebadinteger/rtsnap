@@ -113,9 +113,10 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 		pps.Transform8x8ModeFlag = reader.ReadFlag()
 		pps.PicScalingMatrixPresentFlag = reader.ReadFlag()
 		if pps.PicScalingMatrixPresentFlag {
+			// six 4x4 lists always, plus two 8x8 with transform8x8 and four more for 4:4:4, not chroma array type
 			chroma := 1
 			if sps, ok := spsMap[pps.SeqParameterSetID]; ok {
-				chroma = int(sps.ChromaArrayType())
+				chroma = int(sps.ChromaFormatIDC)
 			}
 
 			nrScalingLists := 6
