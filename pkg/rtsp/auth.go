@@ -122,8 +122,6 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 	}
 }
 
-// rank a challenge, higher is better:
-// usable digest 3 (sha-256 4), basic 2, digest with an unusable qop 1, else 0
 func authRank(header string) int {
 	params := parseAuthHeader(header)
 

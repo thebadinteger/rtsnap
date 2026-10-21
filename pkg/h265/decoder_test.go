@@ -125,8 +125,6 @@ func TestDecode1080p(t *testing.T) {
 	t.Logf("decoded 1080p picture size: %dx%d", b.Dx(), b.Dy())
 }
 
-// reference pixels are decoded by ffmpeg with -color_range pc so the samples
-// are compared as stored, without a limited/full range conversion
 func TestDecodeGray(t *testing.T) {
 	data, err := os.ReadFile("../../tests/testdata/gray256.h265")
 	if err != nil {

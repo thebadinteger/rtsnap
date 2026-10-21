@@ -688,8 +688,6 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 	}
 }
 
-// ReadRTPFrame reads the next frame on the negotiated rtp channel,
-// skipping interleaved rtcp and any other channel
 func (c *Client) ReadRTPFrame(ctx context.Context) (*Frame, error) {
 	for {
 		frame, err := c.ReadFrame(ctx)
