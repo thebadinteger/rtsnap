@@ -148,6 +148,12 @@ func (d *Decoder) Flush() []*Picture {
 	clear(d.dpb)
 	d.dpb = d.dpb[:0]
 
+	// a flush ends the current sequence
+	d.curRPS = refPicSet{}
+	d.poc = pocState{}
+	d.seenPicture = false
+	d.skipRASL = false
+
 	return out
 }
 
@@ -156,12 +162,8 @@ func (d *Decoder) finishPicture() []*Picture {
 		return nil
 	}
 
-	// drop pictures with missing coding tree units instead of emitting garbage
 	if d.ctu != nil && !d.ctu.complete() {
-		d.cur.release()
-		d.cur, d.ctu = nil, nil
-
-		return nil
+		d.cur.Corrupt = true
 	}
 
 	if d.ctu != nil {
@@ -179,15 +181,10 @@ func (d *Decoder) finishPicture() []*Picture {
 	return d.dpbDrain(false)
 }
 
-// true when every coding tree unit of the picture was decoded
+// true when the picture covers every coding tree unit in order
 func (d *ctuDecoder) complete() bool {
-	for _, ok := range d.ctbDecoded {
-		if !ok {
-			return false
-		}
-	}
-
-	return len(d.ctbDecoded) > 0
+	total := int(d.s.picWidthInCtbs) * int(d.s.picHeightInCtbs)
+	return d.nextCTU == total
 }
 
 func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
@@ -360,6 +357,14 @@ func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 	start := int(d.rsToTs[sh.sliceSegmentAddress])
 	tileStart := start == 0 || d.tileID[start] != d.tileID[start-1]
 
+	// slice segments must arrive in raster order without overlap
+	if start < d.nextCTU {
+		return ErrInvalid
+	}
+	if start > d.nextCTU && d.pic != nil {
+		d.pic.Corrupt = true
+	}
+
 	if err := d.startSubstream(nal, sh, starts, sub, tileStart); err != nil {
 		return err
 	}
@@ -404,6 +409,7 @@ func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 			return err
 		}
 		d.ctbDecoded[rs] = true
+		d.nextCTU = ts + 1
 
 		if wpp && rs%w == 1 {
 			d.saved = d.c.state
@@ -520,8 +526,12 @@ func (d *Decoder) buildRefLists(sh *sliceHeader) {
 		d.ctu.refLong[l] = make([]bool, len(pocs))
 
 		for i, p := range pocs {
-			d.ctu.refPics[l][i] = d.dpbFind(p)
+			ref := d.dpbFind(p)
+			d.ctu.refPics[l][i] = ref
 			d.ctu.refLong[l][i] = d.dpbLongTerm(p)
+			if ref == nil || ref.Corrupt {
+				d.cur.Corrupt = true
+			}
 		}
 	}
 

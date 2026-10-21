@@ -95,18 +95,18 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 		return nil
 	}
 
-	// only qop auth is implemented, refuse anything else explicitly
+	// keep the offered qop but only use auth, an unsupported one degrades to no qop
 	qop := strings.TrimSpace(params["qop"])
 	if qop != "" {
-		supported := false
+		hasAuth := false
 		for _, v := range strings.Split(qop, ",") {
 			if strings.EqualFold(strings.TrimSpace(v), "auth") {
-				supported = true
+				hasAuth = true
 				break
 			}
 		}
-		if !supported {
-			return nil
+		if !hasAuth {
+			qop = ""
 		}
 	}
 
@@ -122,21 +122,33 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 	}
 }
 
-// prefer digest when the server offers several challenges
+// prefer digest over basic, and sha-256 over md5
 func pickAuthChallenge(values []string, username, password string) string {
 	basic := ""
+	digest := ""
+
 	for _, v := range values {
 		params := parseAuthHeader(v)
 		switch params["_scheme"] {
 		case "digest":
-			if NewAuth(v, username, password) != nil {
+			if NewAuth(v, username, password) == nil {
+				continue
+			}
+			if strings.HasPrefix(strings.ToUpper(params["algorithm"]), "SHA-256") {
 				return v
+			}
+			if digest == "" {
+				digest = v
 			}
 		case "basic":
 			if basic == "" {
 				basic = v
 			}
 		}
+	}
+
+	if digest != "" {
+		return digest
 	}
 	return basic
 }
@@ -203,6 +215,9 @@ func (a *Auth) Generate(method, uri string) string {
 		parts = append(parts, fmt.Sprintf(`cnonce="%s"`, a.Cnonce))
 	} else {
 		response = a.hash(ha1 + ":" + a.Nonce + ":" + ha2)
+		if strings.HasSuffix(strings.ToLower(a.Algo), "-sess") {
+			parts = append(parts, fmt.Sprintf(`cnonce="%s"`, a.Cnonce))
+		}
 	}
 
 	parts = append(parts, fmt.Sprintf(`response="%s"`, response))

@@ -265,7 +265,16 @@ func TestDecodeMultiSliceMissingSegment(t *testing.T) {
 	d := Decoder{}
 	defer d.Close()
 
-	var got []string
+	var clean, corrupt []string
+	collect := func(p *Picture) {
+		if p.Corrupt {
+			corrupt = append(corrupt, pictureHash(p))
+		} else {
+			clean = append(clean, pictureHash(p))
+		}
+		p.Release()
+	}
+
 	vcl := 0
 	for _, nal := range SplitAnnexB(data) {
 		if nal.Type.IsVCL() {
@@ -279,25 +288,26 @@ func TestDecodeMultiSliceMissingSegment(t *testing.T) {
 			t.Fatalf("decode failed: %v", err)
 		}
 		for _, p := range out {
-			got = append(got, pictureHash(p))
-			p.Release()
+			collect(p)
 		}
 	}
 	for _, p := range d.Flush() {
-		got = append(got, pictureHash(p))
-		p.Release()
+		collect(p)
 	}
 
 	known := make(map[string]bool, len(want))
 	for _, h := range want {
 		known[h] = true
 	}
-	for _, h := range got {
+	for _, h := range clean {
 		if !known[h] {
-			t.Fatal("emitted a picture that is not in the pristine stream")
+			t.Fatal("emitted a clean picture that is not in the pristine stream")
 		}
 	}
-	if len(got) >= len(want) {
-		t.Fatalf("missing segment did not drop a picture: %d of %d", len(got), len(want))
+	if len(corrupt) == 0 {
+		t.Fatal("missing segment did not produce a corrupt picture")
+	}
+	if len(clean) >= len(want) {
+		t.Fatalf("missing segment did not drop a clean picture: %d of %d", len(clean), len(want))
 	}
 }

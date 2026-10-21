@@ -150,6 +150,8 @@ func (d *ctuDecoder) decodeWavefront(nal NALUnit, sh *sliceHeader, starts []int,
 		d.hasSaved = true
 	}
 
+	d.nextCTU = (first + rows) * w
+
 	return nil
 }
 

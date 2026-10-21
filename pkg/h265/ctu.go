@@ -113,6 +113,7 @@ type ctuDecoder struct {
 	sliceLF        []bool
 	ctbSlice       []int32
 	ctbDecoded     []bool
+	nextCTU        int
 	slices         []*sliceHeader
 	depSliceAddrRs int
 

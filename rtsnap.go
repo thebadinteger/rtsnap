@@ -374,8 +374,10 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	var stash []h265.NALUnit
 	var seq seqTracker
 	var seenIRAP bool
+	var fallback image.Image
 	reset := func() {
 		seenIRAP = false
+		fallback = nil
 		depack = rtp.NewH265Depacketizer()
 		dec.Reset()
 		dec.SkipLoop = fast
@@ -404,6 +406,10 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 	for {
 		frame, err := client.ReadFrame(ctx)
 		if err != nil {
+			// prefer a clean frame, fall back to a partly corrupted one
+			if fallback != nil {
+				return fallback, nil
+			}
 			return nil, err
 		}
 		if frame.Channel != client.RTPChannel() {
@@ -451,6 +457,12 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 			if seenIRAP {
 				for _, p := range pics {
 					if img := p.Image(); img != nil {
+						if p.Corrupt {
+							if fallback == nil {
+								fallback = img
+							}
+							continue
+						}
 						return img, nil
 					}
 				}
@@ -461,6 +473,12 @@ func captureH265(ctx context.Context, client *rtsp.Client, fast bool) (image.Ima
 				flush, _ := safely(func() ([]*h265.Picture, error) { return dec.Flush(), nil })
 				for _, p := range flush {
 					if img := p.Image(); img != nil {
+						if p.Corrupt {
+							if fallback == nil {
+								fallback = img
+							}
+							continue
+						}
 						return img, nil
 					}
 				}

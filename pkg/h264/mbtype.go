@@ -1,5 +1,7 @@
 package h264
 
+import "fmt"
+
 func DecodeMBTypeIntra(sc *SliceContext, mbIdx int) int {
 	d := sc.Cabac
 	ctx := sc.Ctx
@@ -210,7 +212,7 @@ func deriveCBPChromaCtx(sc *SliceContext, mbIdx int, secondBin bool) int {
 	return condA + 2*condB
 }
 
-func DecodeQPDelta(sc *SliceContext) int {
+func DecodeQPDelta(sc *SliceContext) (int, error) {
 	ctx := sc.Ctx
 	d := sc.Cabac
 
@@ -221,8 +223,10 @@ func DecodeQPDelta(sc *SliceContext) int {
 
 	bin0 := d.DecodeDecision(&ctx[ctxIdx])
 	if bin0 == 0 {
-		return 0
+		return 0, nil
 	}
+
+	maxVal := 52 + 6*(sc.BitDepthY-8)
 
 	val := 1
 	for {
@@ -235,12 +239,15 @@ func DecodeQPDelta(sc *SliceContext) int {
 			break
 		}
 		val++
+		if val > maxVal {
+			return 0, fmt.Errorf("mb_qp_delta: unary code longer than %d bins", maxVal)
+		}
 	}
 
 	if val%2 == 1 {
-		return (val + 1) / 2
+		return (val + 1) / 2, nil
 	}
-	return -(val / 2)
+	return -(val / 2), nil
 }
 
 var zScanToBlockX = [16]int{0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3}

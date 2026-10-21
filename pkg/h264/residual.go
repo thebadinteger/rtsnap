@@ -1,5 +1,7 @@
 package h264
 
+import "fmt"
+
 const (
 	CtxBlockCatIntra16x16DC = 0
 	CtxBlockCatIntra16x16AC = 1
@@ -33,7 +35,7 @@ var coeffAbsLevelTransition = [2][8]int{
 	{4, 4, 4, 4, 5, 6, 7, 7},
 }
 
-func DecodeResidual(sc *SliceContext, mbIdx int, ctxBlockCat int, blkIdx int, maxCoeff int) []int32 {
+func DecodeResidual(sc *SliceContext, mbIdx int, ctxBlockCat int, blkIdx int, maxCoeff int) ([]int32, error) {
 	coeffs := sc.coeffBuf[:maxCoeff]
 	for i := range coeffs {
 		coeffs[i] = 0
@@ -45,7 +47,7 @@ func DecodeResidual(sc *SliceContext, mbIdx int, ctxBlockCat int, blkIdx int, ma
 		cbf := sc.Cabac.DecodeDecision(&sc.Ctx[ctxIdx])
 		sc.MBs[mbIdx].CodedBlockFlag[ctxBlockCat][blkIdx] = cbf
 		if cbf == 0 {
-			return coeffs
+			return coeffs, nil
 		}
 	}
 
@@ -119,7 +121,10 @@ func DecodeResidual(sc *SliceContext, mbIdx int, ctxBlockCat int, blkIdx int, ma
 			}
 
 			if coeffAbs >= 15 {
-				suffix := decodeExpGolombBypass(sc.Cabac)
+				suffix, err := decodeExpGolombBypass(sc.Cabac, uint(sc.BitDepthY+8))
+				if err != nil {
+					return nil, err
+				}
 				coeffAbs += int32(suffix)
 			}
 
@@ -132,10 +137,10 @@ func DecodeResidual(sc *SliceContext, mbIdx int, ctxBlockCat int, blkIdx int, ma
 		}
 	}
 
-	return coeffs
+	return coeffs, nil
 }
 
-func decodeExpGolombBypass(d *CabacDecoder) uint32 {
+func decodeExpGolombBypass(d *CabacDecoder, maxPrefix uint) (uint32, error) {
 	k := uint(0)
 	for {
 		bin := d.DecodeBypass()
@@ -143,12 +148,15 @@ func decodeExpGolombBypass(d *CabacDecoder) uint32 {
 			break
 		}
 		k++
+		if k > maxPrefix {
+			return 0, fmt.Errorf("coeff_abs_level_minus1: Exp-Golomb prefix longer than %d bins", maxPrefix)
+		}
 	}
 	var val uint32
 	if k > 0 {
 		val = d.ReadBypassU(int(k))
 	}
-	return (1 << k) - 1 + val
+	return (1 << k) - 1 + val, nil
 }
 
 func deriveCodedBlockFlagCtx(sc *SliceContext, mbIdx int, ctxBlockCat int, blkIdx int) int {

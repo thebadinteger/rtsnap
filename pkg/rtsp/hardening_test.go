@@ -29,6 +29,30 @@ func readTestRequest(br *bufio.Reader) (string, error) {
 	}
 }
 
+// read a request including a content-length body
+func readTestRequestWithBody(br *bufio.Reader) (string, string, error) {
+	head, err := readTestRequest(br)
+	if err != nil {
+		return "", "", err
+	}
+	length := 0
+	for _, line := range strings.Split(head, "\r\n") {
+		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
+			if v, err := strconv.Atoi(strings.TrimSpace(line[len("content-length:"):])); err == nil {
+				length = v
+			}
+		}
+	}
+	if length == 0 {
+		return head, "", nil
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(br, body); err != nil {
+		return "", "", err
+	}
+	return head, string(body), nil
+}
+
 func startScriptedServer(t *testing.T, respond func(n int, req string) string) (string, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -271,8 +295,8 @@ func TestDigestStaleRetry(t *testing.T) {
 func TestUnsupportedDigestAlgorithm(t *testing.T) {
 	cases := []string{
 		`Digest realm="r", nonce="n", algorithm=SHA-512-256`,
-		`Digest realm="r", nonce="n", qop="auth-int"`,
-		`Digest realm="r", nonce="n", qop="auth-int"`,
+		`Digest realm="r", nonce="n", algorithm=SHA-512`,
+		`Digest realm="r", nonce="n", algorithm=SHA-256-512`,
 	}
 	for _, header := range cases {
 		if NewAuth(header, "u", "p") != nil {
@@ -287,6 +311,15 @@ func TestUnsupportedDigestAlgorithm(t *testing.T) {
 	}
 	if NewAuth(`Digest realm="r", nonce="n", qop="auth,auth-int"`, "u", "p") == nil {
 		t.Fatal("rejected challenge offering auth")
+	}
+
+	// unsupported qop degrades to a plain digest instead of being refused
+	auth := NewAuth(`Digest realm="r", nonce="n", qop="auth-int"`, "u", "p")
+	if auth == nil {
+		t.Fatal("rejected digest with unsupported qop")
+	}
+	if auth.Qop != "" {
+		t.Fatalf("qop not cleared: %q", auth.Qop)
 	}
 
 	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
@@ -452,6 +485,137 @@ func TestRequestURLStripsUserAndFragment(t *testing.T) {
 	}
 }
 
+func TestRequestURLAddsRootPath(t *testing.T) {
+	u, err := url.Parse("rtsp://host:554")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := requestURL(u, "rtsp"); got != "rtsp://host:554/" {
+		t.Fatalf("request url %q", got)
+	}
+}
+
+func TestSetupTCPRequiresChannelPair(t *testing.T) {
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		if strings.HasPrefix(req, "SETUP") {
+			return "RTSP/1.0 200 OK\r\nTransport: RTP/AVP/TCP;unicast;interleaved=4-9\r\n\r\n"
+		}
+		return sdpResponse()
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "", "", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Describe(context.Background()); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if err := client.Setup(context.Background()); err == nil {
+		t.Fatal("expected setup to reject a non adjacent interleaved pair")
+	}
+}
+
+func TestSetupTCPAcceptsSAVP(t *testing.T) {
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		if strings.HasPrefix(req, "SETUP") {
+			return "RTSP/1.0 200 OK\r\nTransport: RTP/SAVP/TCP;unicast;interleaved=2-3\r\n\r\n"
+		}
+		return sdpResponse()
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "", "", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Describe(context.Background()); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if err := client.Setup(context.Background()); err != nil {
+		t.Fatalf("setup with savp profile: %v", err)
+	}
+	if client.RTPChannel() != 2 {
+		t.Fatalf("rtp channel %d, want 2", client.RTPChannel())
+	}
+}
+
+func TestPickAuthChallengePrefersSHA256(t *testing.T) {
+	values := []string{
+		`Digest realm="r", nonce="n1", algorithm=MD5`,
+		`Basic realm="r"`,
+		`Digest realm="r", nonce="n2", algorithm=SHA-256`,
+	}
+	got := pickAuthChallenge(values, "u", "p")
+	if !strings.Contains(got, "SHA-256") || !strings.Contains(got, `nonce="n2"`) {
+		t.Fatalf("did not prefer sha-256: %s", got)
+	}
+
+	got = pickAuthChallenge([]string{`Digest realm="r", nonce="n1", algorithm=MD5`, `Basic realm="r"`}, "u", "p")
+	if !strings.Contains(got, "MD5") {
+		t.Fatalf("did not prefer digest over basic: %s", got)
+	}
+}
+
+func TestSessDigestKeepsCnonce(t *testing.T) {
+	auth := NewAuth(`Digest realm="r", nonce="n", algorithm=MD5-sess`, "u", "p")
+	if auth == nil {
+		t.Fatal("rejected md5-sess")
+	}
+	header := auth.Generate("DESCRIBE", "rtsp://host/live")
+	if !strings.Contains(header, "cnonce=") {
+		t.Fatalf("md5-sess without cnonce: %s", header)
+	}
+}
+
+func TestOpenUDPPortsSendsToServer(t *testing.T) {
+	rtp := &countingPacketConn{}
+	rtcp := &countingPacketConn{}
+	client := &Client{
+		udp:           true,
+		udpRTP:        rtp,
+		udpRTCP:       rtcp,
+		udpRTPIP:      net.IPv4(127, 0, 0, 1),
+		udpServerRTP:  9000,
+		udpServerRTCP: 9001,
+	}
+	client.openUDPPorts()
+
+	if rtp.writes != 1 || rtcp.writes != 1 {
+		t.Fatalf("expected one datagram each, got rtp=%d rtcp=%d", rtp.writes, rtcp.writes)
+	}
+	if rtp.lastPort != 9000 || rtcp.lastPort != 9001 {
+		t.Fatalf("wrong ports: rtp=%d rtcp=%d", rtp.lastPort, rtcp.lastPort)
+	}
+}
+
+type countingPacketConn struct {
+	writes   int
+	lastPort int
+}
+
+func (c *countingPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	return 0, nil, io.EOF
+}
+
+func (c *countingPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	c.writes++
+	if ua, ok := addr.(*net.UDPAddr); ok {
+		c.lastPort = ua.Port
+	}
+	return len(p), nil
+}
+
+func (c *countingPacketConn) Close() error                       { return nil }
+func (c *countingPacketConn) LocalAddr() net.Addr                { return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+func (c *countingPacketConn) SetDeadline(t time.Time) error      { return nil }
+func (c *countingPacketConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *countingPacketConn) SetWriteDeadline(t time.Time) error { return nil }
+
 func TestTunnelPathEscaped(t *testing.T) {
 	u, err := url.Parse("rtsp://host/a%2Fb%20c?x=1#frag")
 	if err != nil {
@@ -485,6 +649,53 @@ func TestSetupTCPRejectsNonInterleaved(t *testing.T) {
 	}
 }
 
+func TestSetupTCPRejectsOutOfRangeChannel(t *testing.T) {
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		if strings.HasPrefix(req, "SETUP") {
+			return "RTSP/1.0 200 OK\r\nTransport: RTP/AVP/TCP;unicast;interleaved=999-1000\r\n\r\n"
+		}
+		return sdpResponse()
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "", "", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Describe(context.Background()); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if err := client.Setup(context.Background()); err == nil {
+		t.Fatal("expected setup to reject out of range channel")
+	}
+}
+
+func TestSetupUDPRejectsTCPResponse(t *testing.T) {
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		if strings.HasPrefix(req, "SETUP") {
+			return "RTSP/1.0 200 OK\r\nTransport: RTP/AVP/TCP;unicast;server_port=9000-9001\r\n\r\n"
+		}
+		return sdpResponse()
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "", "", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	client.Transport = TransportUDP
+
+	if err := client.Describe(context.Background()); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if err := client.Setup(context.Background()); err == nil {
+		t.Fatal("expected setup to reject tcp transport on udp request")
+	}
+}
+
 func TestReadRTPFrameSkipsOtherChannels(t *testing.T) {
 	rtcp := []byte{magicByte, 1, 0, 4, 1, 2, 3, 4}
 	rtp := []byte{magicByte, 0, 0, 3, 9, 9, 9}
@@ -502,5 +713,101 @@ func TestReadRTPFrameSkipsOtherChannels(t *testing.T) {
 	}
 	if !bytes.Equal(frame.Payload, []byte{9, 9, 9}) {
 		t.Fatalf("payload %v", frame.Payload)
+	}
+}
+
+func TestDoResendsBodyOnAuthRetry(t *testing.T) {
+	bodies := make(chan string, 4)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		for i := 0; ; i++ {
+			head, body, err := readTestRequestWithBody(br)
+			if err != nil {
+				return
+			}
+			bodies <- body
+			if i == 0 {
+				_, _ = conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\n" +
+					"WWW-Authenticate: Basic realm=\"cam\"\r\n\r\n"))
+				continue
+			}
+			if !strings.Contains(head, "Authorization:") {
+				_, _ = conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"cam\"\r\n\r\n"))
+				continue
+			}
+			_, _ = conn.Write([]byte("RTSP/1.0 200 OK\r\n\r\n"))
+		}
+	}()
+
+	client, err := Dial(context.Background(), "rtsp://"+ln.Addr().String()+"/live", "user", "pass", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	res, err := client.Do(context.Background(), "ANNOUNCE", client.cleanURL,
+		map[string]string{"Content-Type": "application/sdp"}, []byte("v=0-body"))
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("status %d, want 200", res.StatusCode)
+	}
+
+	first := <-bodies
+	second := <-bodies
+	if first != "v=0-body" || second != "v=0-body" {
+		t.Fatalf("body not resent: first=%q second=%q", first, second)
+	}
+}
+
+func TestDescribeErrNoMedia(t *testing.T) {
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		sdp := "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=x\r\nt=0 0\r\nm=audio 0 RTP/AVP 97\r\na=rtpmap:97 PCMU/8000\r\na=control:track0\r\n"
+		return "RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\nContent-Length: " + strconv.Itoa(len(sdp)) + "\r\n\r\n" + sdp
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "", "", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.DescribeAuth(context.Background())
+	if !errors.Is(err, ErrNoMedia) {
+		t.Fatalf("expected ErrNoMedia, got %v", err)
+	}
+}
+
+func TestReadRTPFrameUDP(t *testing.T) {
+	conn := &fakePacketConn{
+		packets: []fakePacket{
+			{data: []byte("payload"), addr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5000}},
+		},
+	}
+	client := &Client{
+		udp:        true,
+		udpRTP:     conn,
+		udpRTPIP:   net.IPv4(127, 0, 0, 1),
+		rtpChannel: 0,
+	}
+
+	frame, err := client.ReadRTPFrame(context.Background())
+	if err != nil {
+		t.Fatalf("read rtp frame: %v", err)
+	}
+	if string(frame.Payload) != "payload" {
+		t.Fatalf("payload %q", frame.Payload)
 	}
 }

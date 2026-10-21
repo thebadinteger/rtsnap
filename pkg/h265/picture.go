@@ -25,6 +25,9 @@ type Picture struct {
 
 	POC int
 
+	// set when a slice segment or a reference was missing
+	Corrupt bool
+
 	Y, Cb, Cr       []uint8
 	Y16, Cb16, Cr16 []uint16
 

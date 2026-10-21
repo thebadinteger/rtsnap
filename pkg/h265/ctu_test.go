@@ -33,19 +33,19 @@ func TestCompleteMultiThread(t *testing.T) {
 }
 
 func TestCompleteRejectsPartial(t *testing.T) {
-	d := &ctuDecoder{ctbDecoded: make([]bool, 4)}
-	d.ctbDecoded[0], d.ctbDecoded[1] = true, true
+	s := &sps{picWidthInCtbs: 2, picHeightInCtbs: 2}
 
+	d := &ctuDecoder{s: s, nextCTU: 2}
 	if d.complete() {
 		t.Fatal("partial picture reported as complete")
 	}
 
-	d.ctbDecoded[2], d.ctbDecoded[3] = true, true
+	d.nextCTU = 4
 	if !d.complete() {
 		t.Fatal("full picture reported as partial")
 	}
 
-	empty := &ctuDecoder{}
+	empty := &ctuDecoder{s: s}
 	if empty.complete() {
 		t.Fatal("empty picture reported as complete")
 	}

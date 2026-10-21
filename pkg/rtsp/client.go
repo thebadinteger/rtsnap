@@ -13,29 +13,31 @@ import (
 )
 
 type Client struct {
-	conn       net.Conn
-	reader     *bufio.Reader
-	rawURL     string
-	cleanURL   string
-	user       string
-	pass       string
-	cseq       int
-	session    string
-	auth       *Auth
-	authTries  int
-	Tracks     []*MediaTrack
-	Track      *MediaTrack
-	Transport  Transport
-	UserAgent  string
-	DebugFunc  func(string)
-	rtpChannel int
-	udp        bool
-	udpRTP     net.PacketConn
-	udpRTCP    net.PacketConn
-	udpBuf     []byte
-	udpRTPIP   net.IP
-	remoteIP   net.IP
-	tunnel     bool
+	conn          net.Conn
+	reader        *bufio.Reader
+	rawURL        string
+	cleanURL      string
+	user          string
+	pass          string
+	cseq          int
+	session       string
+	auth          *Auth
+	authTries     int
+	Tracks        []*MediaTrack
+	Track         *MediaTrack
+	Transport     Transport
+	UserAgent     string
+	DebugFunc     func(string)
+	rtpChannel    int
+	udp           bool
+	udpRTP        net.PacketConn
+	udpRTCP       net.PacketConn
+	udpBuf        []byte
+	udpRTPIP      net.IP
+	udpServerRTP  int
+	udpServerRTCP int
+	remoteIP      net.IP
+	tunnel        bool
 }
 
 // dial settings overriding defaults
@@ -125,6 +127,9 @@ func requestURL(u *url.URL, scheme string) string {
 	clean.User = nil
 	clean.Fragment = ""
 	clean.Scheme = scheme
+	if clean.Path == "" {
+		clean.Path = "/"
+	}
 	return clean.String()
 }
 
@@ -523,7 +528,14 @@ func (c *Client) setupUDP(ctx context.Context) (*Response, error) {
 		_ = rtcpConn.Close()
 		return res, nil
 	}
-	if udpServerPort(res.Header("Transport")) == 0 {
+
+	trans := res.Header("Transport")
+	if strings.Contains(trans, "RTP/AVP/TCP") {
+		_ = rtpConn.Close()
+		_ = rtcpConn.Close()
+		return res, fmt.Errorf("setup udp: server did not accept udp transport: %s", trans)
+	}
+	if udpServerPort(trans) == 0 {
 		_ = rtpConn.Close()
 		_ = rtcpConn.Close()
 		return nil, fmt.Errorf("setup udp: server did not provide server_port")
@@ -533,11 +545,24 @@ func (c *Client) setupUDP(ctx context.Context) (*Response, error) {
 	c.udpRTP = rtpConn
 	c.udpRTCP = rtcpConn
 	c.udp = true
-	c.udpRTPIP = transportSource(res.Header("Transport"))
+	c.udpServerRTP = udpServerPort(trans)
+	c.udpServerRTCP = c.udpServerRTP + 1
+	c.udpRTPIP = transportSource(trans)
 	if c.udpRTPIP == nil {
 		c.udpRTPIP = c.remoteIP
 	}
 	return res, nil
+}
+
+// send a first datagram so stateful firewalls let the camera stream back
+func (c *Client) openUDPPorts() {
+	if c.udpRTP == nil || c.udpRTPIP == nil || c.udpServerRTP == 0 {
+		return
+	}
+	rtp := &net.UDPAddr{IP: c.udpRTPIP, Port: c.udpServerRTP}
+	rtcp := &net.UDPAddr{IP: c.udpRTPIP, Port: c.udpServerRTCP}
+	_, _ = c.udpRTP.WriteTo([]byte{0x80, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0}, rtp)
+	_, _ = c.udpRTCP.WriteTo([]byte{0x80, 0xc9, 0x00, 0x01, 0, 0, 0, 0}, rtcp)
 }
 
 // negotiate tcp interleaved transport
@@ -558,31 +583,32 @@ func (c *Client) setupTCP(ctx context.Context) (*Response, error) {
 		return res, nil
 	}
 
-	c.storeSession(res)
-
 	trans := res.Header("Transport")
-	if !strings.Contains(trans, "RTP/AVP/TCP") {
+	if !strings.Contains(trans, "/TCP") {
 		return res, fmt.Errorf("setup tcp: server did not accept interleaved transport: %s", trans)
 	}
 
-	channel := -1
+	rtpCh, rtcpCh := -1, -1
 	for _, part := range strings.Split(trans, ";") {
 		part = strings.TrimSpace(part)
 		if strings.HasPrefix(part, "interleaved=") {
 			chans := strings.TrimPrefix(part, "interleaved=")
 			if dash := strings.IndexByte(chans, '-'); dash != -1 {
-				chans = chans[:dash]
-			}
-			ch, err := strconv.Atoi(chans)
-			if err == nil {
-				channel = ch
+				a, errA := strconv.Atoi(strings.TrimSpace(chans[:dash]))
+				b, errB := strconv.Atoi(strings.TrimSpace(chans[dash+1:]))
+				if errA == nil && errB == nil {
+					rtpCh, rtcpCh = a, b
+				}
 			}
 		}
 	}
-	if channel < 0 {
-		return res, fmt.Errorf("setup tcp: server did not provide interleaved channels: %s", trans)
+	// rtp and rtcp channels must be an adjacent pair inside a single byte
+	if rtpCh < 0 || rtcpCh != rtpCh+1 || rtpCh > 254 {
+		return res, fmt.Errorf("setup tcp: invalid interleaved channels: %s", trans)
 	}
-	c.rtpChannel = channel
+
+	c.storeSession(res)
+	c.rtpChannel = rtpCh
 
 	return res, nil
 }
@@ -604,6 +630,9 @@ func (c *Client) PlayRaw(ctx context.Context) (*Response, error) {
 	res, err := c.Do(ctx, "PLAY", c.cleanURL, map[string]string{"Range": "npt=0.000-"}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("play failed: %w", err)
+	}
+	if res.StatusCode == 200 && c.udp {
+		c.openUDPPorts()
 	}
 	return res, nil
 }
