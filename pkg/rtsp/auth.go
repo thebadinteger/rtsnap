@@ -76,6 +76,16 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 		return nil
 	}
 
+	// basic ignores algorithm and qop
+	if scheme == "basic" {
+		return &Auth{
+			Username: username,
+			Password: password,
+			Method:   scheme,
+			Realm:    params["realm"],
+		}
+	}
+
 	algo := strings.ToUpper(strings.TrimSpace(params["algorithm"]))
 	switch algo {
 	case "":
@@ -113,13 +123,15 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 }
 
 // prefer digest when the server offers several challenges
-func pickAuthChallenge(values []string) string {
+func pickAuthChallenge(values []string, username, password string) string {
 	basic := ""
 	for _, v := range values {
 		params := parseAuthHeader(v)
 		switch params["_scheme"] {
 		case "digest":
-			return v
+			if NewAuth(v, username, password) != nil {
+				return v
+			}
 		case "basic":
 			if basic == "" {
 				basic = v
@@ -165,7 +177,7 @@ func (a *Auth) Generate(method, uri string) string {
 
 	hasQop := false
 	for _, q := range strings.Split(a.Qop, ",") {
-		if strings.TrimSpace(q) == "auth" {
+		if strings.EqualFold(strings.TrimSpace(q), "auth") {
 			hasQop = true
 			break
 		}

@@ -88,10 +88,7 @@ func DialWithConfig(ctx context.Context, rtspURL string, user, pass string, cfg 
 		reqScheme = "rtsps"
 	}
 
-	cleanU := *u
-	cleanU.User = nil
-	cleanU.Scheme = reqScheme
-	cleanURL := cleanU.String()
+	cleanURL := requestURL(u, reqScheme)
 
 	addr := dialAddr(u, scheme)
 	tlsCfg := tlsClientConfig(cfg.TLSConfig, u.Hostname(), secure)
@@ -120,6 +117,15 @@ func DialWithConfig(ctx context.Context, rtspURL string, user, pass string, cfg 
 		c.remoteIP = ta.IP
 	}
 	return c, nil
+}
+
+// rtsp request uri without credentials or fragment
+func requestURL(u *url.URL, scheme string) string {
+	clean := *u
+	clean.User = nil
+	clean.Fragment = ""
+	clean.Scheme = scheme
+	return clean.String()
 }
 
 // address with default port for every supported scheme
@@ -157,7 +163,7 @@ func tlsClientConfig(base *tls.Config, serverName string, secure bool) *tls.Conf
 }
 
 func tunnelPath(u *url.URL) string {
-	path := u.Path
+	path := u.EscapedPath()
 	if path == "" {
 		path = "/"
 	}
@@ -261,7 +267,7 @@ func (c *Client) rawRoundTrip(ctx context.Context, req *Request) (*Response, err
 func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) (*Response, error) {
 	values := unauth.Values("WWW-Authenticate")
 	if len(values) == 0 {
-		return nil, fmt.Errorf("unauthorized without www-authenticate header")
+		return unauth, nil
 	}
 
 	stale := false
@@ -278,13 +284,13 @@ func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) 
 		return unauth, nil
 	}
 
-	challenge := pickAuthChallenge(values)
+	challenge := pickAuthChallenge(values, c.user, c.pass)
 	if challenge == "" {
-		return nil, fmt.Errorf("%w: no supported challenge", ErrUnsupportedAuth)
+		return unauth, nil
 	}
 	auth := NewAuth(challenge, c.user, c.pass)
 	if auth == nil {
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedAuth, challenge)
+		return unauth, nil
 	}
 	c.auth = auth
 	c.authTries++
@@ -555,6 +561,11 @@ func (c *Client) setupTCP(ctx context.Context) (*Response, error) {
 	c.storeSession(res)
 
 	trans := res.Header("Transport")
+	if !strings.Contains(trans, "RTP/AVP/TCP") {
+		return res, fmt.Errorf("setup tcp: server did not accept interleaved transport: %s", trans)
+	}
+
+	channel := -1
 	for _, part := range strings.Split(trans, ";") {
 		part = strings.TrimSpace(part)
 		if strings.HasPrefix(part, "interleaved=") {
@@ -564,10 +575,14 @@ func (c *Client) setupTCP(ctx context.Context) (*Response, error) {
 			}
 			ch, err := strconv.Atoi(chans)
 			if err == nil {
-				c.rtpChannel = ch
+				channel = ch
 			}
 		}
 	}
+	if channel < 0 {
+		return res, fmt.Errorf("setup tcp: server did not provide interleaved channels: %s", trans)
+	}
+	c.rtpChannel = channel
 
 	return res, nil
 }
@@ -640,6 +655,18 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 				return nil, ctx.Err()
 			}
 			return nil, err
+		}
+	}
+}
+
+func (c *Client) ReadRTPFrame(ctx context.Context) (*Frame, error) {
+	for {
+		frame, err := c.ReadFrame(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if frame.Channel == c.rtpChannel {
+			return frame, nil
 		}
 	}
 }

@@ -2,6 +2,7 @@ package rtsp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -183,8 +184,47 @@ func TestUnsupportedChallengeKeepsStatus(t *testing.T) {
 		t.Fatalf("challenge missing: %q", got)
 	}
 
-	if _, err := client.DescribeAuth(context.Background()); !errors.Is(err, ErrUnsupportedAuth) {
-		t.Fatalf("expected ErrUnsupportedAuth, got %v", err)
+	authRes, err := client.DescribeAuth(context.Background())
+	if err != nil {
+		t.Fatalf("auth describe must not fail on unsupported challenge: %v", err)
+	}
+	if authRes.StatusCode != 401 {
+		t.Fatalf("auth status %d, want 401", authRes.StatusCode)
+	}
+}
+
+func TestDigestFallsBackToBasic(t *testing.T) {
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		if n == 1 {
+			return "RTSP/1.0 401 Unauthorized\r\n" +
+				"WWW-Authenticate: Digest realm=\"cam\", nonce=\"n\", algorithm=SHA-512-256\r\n" +
+				"WWW-Authenticate: Basic realm=\"cam\"\r\n" +
+				"\r\n"
+		}
+		for _, line := range strings.Split(req, "\r\n") {
+			if strings.HasPrefix(strings.ToLower(line), "authorization:") {
+				if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "authorization: basic ") {
+					return sdpResponse()
+				}
+				return "RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"cam\"\r\n\r\n"
+			}
+		}
+		return "RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"cam\"\r\n\r\n"
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "user", "pass", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	res, err := client.DescribeAuth(context.Background())
+	if err != nil {
+		t.Fatalf("describe auth: %v", err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("status %d, want 200", res.StatusCode)
 	}
 }
 
@@ -260,9 +300,36 @@ func TestUnsupportedDigestAlgorithm(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, err = client.DescribeAuth(context.Background())
-	if !errors.Is(err, ErrUnsupportedAuth) {
-		t.Fatalf("expected ErrUnsupportedAuth, got %v", err)
+	res, err := client.DescribeAuth(context.Background())
+	if err != nil {
+		t.Fatalf("auth describe must not fail on unsupported algorithm: %v", err)
+	}
+	if res.StatusCode != 401 {
+		t.Fatalf("status %d, want 401", res.StatusCode)
+	}
+}
+
+func TestBasicIgnoresDigestParams(t *testing.T) {
+	auth := NewAuth(`Basic realm="cam", algorithm=SHA-512-256, qop="auth-int"`, "u", "p")
+	if auth == nil {
+		t.Fatal("rejected basic with digest parameters")
+	}
+	if auth.Method != "basic" {
+		t.Fatalf("method %q, want basic", auth.Method)
+	}
+}
+
+func TestGenerateQopCaseInsensitive(t *testing.T) {
+	auth := NewAuth(`Digest realm="r", nonce="n", qop="AUTH"`, "u", "p")
+	if auth == nil {
+		t.Fatal("rejected qop AUTH")
+	}
+	header := auth.Generate("DESCRIBE", "rtsp://host/live")
+	if !strings.Contains(header, "qop=auth") {
+		t.Fatalf("missing qop in %s", header)
+	}
+	if !strings.Contains(header, "nc=") || !strings.Contains(header, "cnonce=") {
+		t.Fatalf("missing qop fields in %s", header)
 	}
 }
 
@@ -372,5 +439,68 @@ func TestTunnelDialHonorsContext(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("tunnel dial ignored context for %v", elapsed)
+	}
+}
+
+func TestRequestURLStripsUserAndFragment(t *testing.T) {
+	u, err := url.Parse("rtsp://admin:secret@host:554/live?a=1#frag")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := requestURL(u, "rtsp"); got != "rtsp://host:554/live?a=1" {
+		t.Fatalf("request url %q", got)
+	}
+}
+
+func TestTunnelPathEscaped(t *testing.T) {
+	u, err := url.Parse("rtsp://host/a%2Fb%20c?x=1#frag")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := tunnelPath(u); got != "/a%2Fb%20c?x=1" {
+		t.Fatalf("tunnel path %q", got)
+	}
+}
+
+func TestSetupTCPRejectsNonInterleaved(t *testing.T) {
+	addr, closeFn := startScriptedServer(t, func(n int, req string) string {
+		if strings.HasPrefix(req, "SETUP") {
+			return "RTSP/1.0 200 OK\r\nTransport: RTP/AVP;unicast;client_port=8000-8001\r\n\r\n"
+		}
+		return sdpResponse()
+	})
+	defer closeFn()
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/live", "", "", true)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Describe(context.Background()); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if err := client.Setup(context.Background()); err == nil {
+		t.Fatal("expected setup to reject non interleaved transport")
+	}
+}
+
+func TestReadRTPFrameSkipsOtherChannels(t *testing.T) {
+	rtcp := []byte{magicByte, 1, 0, 4, 1, 2, 3, 4}
+	rtp := []byte{magicByte, 0, 0, 3, 9, 9, 9}
+	client := &Client{
+		reader:     bufio.NewReader(bytes.NewReader(append(rtcp, rtp...))),
+		rtpChannel: 0,
+	}
+
+	frame, err := client.ReadRTPFrame(context.Background())
+	if err != nil {
+		t.Fatalf("read rtp frame: %v", err)
+	}
+	if frame.Channel != 0 {
+		t.Fatalf("channel %d, want 0", frame.Channel)
+	}
+	if !bytes.Equal(frame.Payload, []byte{9, 9, 9}) {
+		t.Fatalf("payload %v", frame.Payload)
 	}
 }

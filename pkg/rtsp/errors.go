@@ -9,8 +9,6 @@ import (
 var (
 	// sdp carries no media tracks
 	ErrNoMedia = errors.New("no video tracks found in sdp")
-	// auth scheme or digest algorithm is not supported
-	ErrUnsupportedAuth = errors.New("unsupported authentication")
 )
 
 // server answered with a non success status

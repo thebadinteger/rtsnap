@@ -131,7 +131,8 @@ func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, er
 ```
 Connects to the RTSP stream and queries available video tracks (codec, payload type, clock rate, control URL) without initiating streaming or frame decoding  
 ### Low-level responses
-`pkg/rtsp` also exposes `DescribeRaw`, `SetupRaw`, `PlayRaw`, and `Do`, which return the `*rtsp.Response` even for non-success statuses. The regular methods return `*rtsp.StatusError` (code, status, all response headers, body) so scanners can inspect `401`, `404`, `503` and multiple `WWW-Authenticate` values without parsing strings  
+`pkg/rtsp` exposes `DescribeRaw`, `SetupRaw`, `PlayRaw`, `Do`, and `ReadRTPFrame`. All of them return the `*rtsp.Response` even for non-success statuses; auth retry is allowed where state is negotiated (`Setup`/`Play`), so `session`, `Transport` and interleaved channels stay consistent. `Do` and `ReadRTPFrame` are generic low-level helpers. A rejected `401` with no usable credentials is returned as a plain response, never as a transport error  
+Description helpers differ on purpose: `Describe` retries with the configured credentials and returns `*rtsp.StatusError` on non-`200`; `DescribeAuth` does the same but returns the response; `DescribeRaw` performs no auth retry and just returns the response, which is what route/credential probing needs  
 ### Functional Options  
 - `WithAuth(username, password string)`: Sets credentials for HTTP Basic or Digest authentication
 - `WithTimeout(d time.Duration)`: Sets a client-side timeout that bounds the total operation duration
