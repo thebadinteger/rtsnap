@@ -148,7 +148,6 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 	}
 }
 
-// rank a challenge, higher is better
 func authRank(header string) int {
 	params := parseAuthHeader(header)
 

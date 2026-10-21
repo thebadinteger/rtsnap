@@ -56,8 +56,8 @@ func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB 
 			return lastMB, fmt.Errorf("cabac: unexpected end of slice data at mb %d", mbIdx)
 		}
 
-		// end_of_slice_flag is not coded for pcm macroblocks
-		if mbIdx < sc.TotalMBs-1 && !sc.MBs[mbIdx].IsPCM {
+		// the engine is reinitialized after pcm, the terminate bin still follows
+		if mbIdx < sc.TotalMBs-1 {
 			endOfSlice := dec.DecodeTerminate()
 			if endOfSlice == 1 {
 				break
@@ -298,8 +298,8 @@ func decodeIPCM(sc *SliceContext, mbIdx int) error {
 	mb := &sc.MBs[mbIdx]
 	mb.MBType = MBTypeIPCM
 	mb.IsPCM = true
-	mb.QPY = 26
-	sc.QPY = 26
+	mb.QPY = 0
+	sc.PrevMBQPDeltaNonZero = false
 
 	off := dec.pos
 	count := 256 + 2*pcmChromaCount(sc.ChromaArrayType)
@@ -567,8 +567,7 @@ func decodeIPCMCAVLC(sc *SliceContext, mbIdx int) error {
 	mb := &sc.MBs[mbIdx]
 	mb.MBType = MBTypeIPCM
 	mb.IsPCM = true
-	mb.QPY = 26
-	sc.QPY = 26
+	mb.QPY = 0
 
 	off := br.bytePos
 	count := 256 + 2*pcmChromaCount(sc.ChromaArrayType)

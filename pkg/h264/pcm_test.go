@@ -12,7 +12,7 @@ func pcmSPS() []byte {
 	w.ue(2)
 	w.ue(0)
 	w.bit(0)
-	w.ue(0)
+	w.ue(1)
 	w.ue(0)
 	w.bit(1)
 	w.bit(1)
@@ -43,6 +43,26 @@ func pcmPPS() []byte {
 	return append([]byte{0x68}, w.bytes()...)
 }
 
+func pcmBlockSamples(w *spsBitWriter, base byte) {
+	w.ue(25) // mb type i pcm
+
+	// pcm samples are byte aligned
+	w.bit(1)
+	for w.nbit != 0 {
+		w.bit(0)
+	}
+
+	for i := range 256 {
+		w.buf = append(w.buf, base+byte(i%200))
+	}
+	for i := range 64 {
+		w.buf = append(w.buf, base+byte(i))
+	}
+	for i := range 64 {
+		w.buf = append(w.buf, base+byte((i+30)%200))
+	}
+}
+
 func pcmIDRCAVLC() []byte {
 	w := &spsBitWriter{}
 	w.ue(0) // first mb
@@ -53,23 +73,10 @@ func pcmIDRCAVLC() []byte {
 	w.bit(0) // no output of prior pics
 	w.bit(0) // long term reference
 	w.ue(0)  // slice qp delta
-	w.ue(25) // mb type i pcm
 
-	// pcm samples are byte aligned
-	w.bit(1)
-	for w.nbit != 0 {
-		w.bit(0)
-	}
-
-	for i := range 256 {
-		w.buf = append(w.buf, byte(i%255+1))
-	}
-	for i := range 64 {
-		w.buf = append(w.buf, byte(i%255+1))
-	}
-	for i := range 64 {
-		w.buf = append(w.buf, byte((i+30)%255+1))
-	}
+	// two consecutive pcm macroblocks, the second must parse cleanly
+	pcmBlockSamples(w, 1)
+	pcmBlockSamples(w, 2)
 
 	return append([]byte{0x65}, w.bytes()...)
 }
@@ -91,22 +98,33 @@ func TestDecodeIDRPCMCAVLC(t *testing.T) {
 	if f == nil {
 		t.Fatal("no frame")
 	}
-	if f.Width != 16 || f.Height != 16 {
+	if f.Width != 32 || f.Height != 16 {
 		t.Fatalf("size %dx%d", f.Width, f.Height)
 	}
 
-	// edge pixels are deblocked, check the clean corners only
 	if got := f.GetLumaPixel(0, 0); got != 1 {
 		t.Errorf("y(0,0) = %d, want 1", got)
 	}
-	if got := f.GetLumaPixel(0, 15); got != 241 {
-		t.Errorf("y(0,15) = %d, want 241", got)
+	// edge columns are deblocked, check the clean pixel at col 15
+	if got := f.GetLumaPixel(15, 0); got != 16 {
+		t.Errorf("y(15,0) = %d, want 16", got)
 	}
-	if got := f.GetChromaPixel(0, 7, 7); got != 64 {
-		t.Errorf("cb(7,7) = %d, want 64", got)
+
+	if got := f.GetLumaPixel(16, 0); got != 2 {
+		t.Errorf("y(16,0) = %d, want 2", got)
+	}
+	if got := f.GetLumaPixel(31, 0); got != 17 {
+		t.Errorf("y(31,0) = %d, want 17", got)
+	}
+
+	if got := f.GetChromaPixel(0, 0, 0); got != 1 {
+		t.Errorf("cb(0,0) = %d, want 1", got)
 	}
 	if got := f.GetChromaPixel(1, 0, 0); got != 31 {
 		t.Errorf("cr(0,0) = %d, want 31", got)
+	}
+	if got := f.GetChromaPixel(0, 8, 0); got != 2 {
+		t.Errorf("cb(8,0) = %d, want 2", got)
 	}
 }
 
@@ -142,8 +160,8 @@ func TestDecodeIPCMCABAC(t *testing.T) {
 	if !mb.IsPCM || mb.MBType != MBTypeIPCM {
 		t.Fatalf("mb state wrong: pcm=%v type=%d", mb.IsPCM, mb.MBType)
 	}
-	if mb.QPY != 26 {
-		t.Errorf("qpy %d, want 26", mb.QPY)
+	if mb.QPY != 0 {
+		t.Errorf("qpy %d, want 0", mb.QPY)
 	}
 	if mb.PCMLuma[0] != 1 || mb.PCMLuma[254] != 255 {
 		t.Error("luma samples wrong")
