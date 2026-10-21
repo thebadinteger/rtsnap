@@ -29,68 +29,146 @@ func separatePlaneSPS() []byte {
 	return append([]byte{0x67}, w.bytes()...)
 }
 
-func TestPPSScalingListCounts(t *testing.T) {
-	sps := separatePlaneSPS()
-
-	// 4:4:4 by chroma_format_idc and transform8x8: twelve list present flags
-	w := &spsBitWriter{}
-	w.ue(0)
-	w.ue(0)
-	w.bit(0)
-	w.bit(0)
-	w.ue(0)
-	w.ue(0)
-	w.ue(0)
-	w.bit(0)
-	w.u(0, 2)
-	w.ue(0)
-	w.ue(0)
-	w.ue(0)
-	w.bit(0)
-	w.bit(0)
-	w.bit(0)
-	w.bit(1) // transform8x8
-	w.bit(1) // scaling matrix
-	for i := 0; i < 12; i++ {
-		w.bit(0)
-	}
-	w.ue(0)
-	pps := append([]byte{0x68}, w.bytes()...)
-
+func ppsWithScaling(sps []byte, transform8x8 bool, firstList bool, lists int) ([]byte, error) {
 	d := New()
 	if _, err := d.DecodeNALUs([][]byte{sps}); err != nil {
+		return nil, err
+	}
+
+	w := &spsBitWriter{}
+	w.ue(0)  // pps id
+	w.ue(0)  // sps id
+	w.bit(0) // entropy coding mode
+	w.bit(0)
+	w.ue(0) // num slice groups
+	w.ue(0) // ref idx l0
+	w.ue(0) // ref idx l1
+	w.bit(0)
+	w.u(0, 2)
+	w.ue(0) // pic init qp
+	w.ue(0)
+	w.ue(0)
+	w.bit(0) // deblocking filter control
+	w.bit(0)
+	w.bit(0)
+
+	if transform8x8 {
+		w.bit(1)
+	} else {
+		w.bit(0)
+	}
+
+	w.bit(1) // pic scaling matrix present
+
+	for i := 0; i < lists; i++ {
+		if i == 0 && firstList {
+			w.bit(1)
+
+			// four by four list with alternating deltas, values become 9 8 9 8 ...
+			for j := 0; j < 16; j++ {
+				if j%2 == 0 {
+					w.ue(1)
+				} else {
+					w.ue(2)
+				}
+			}
+
+			continue
+		}
+
+		w.bit(0)
+	}
+
+	w.ue(0) // second chroma qp index offset
+
+	return append([]byte{0x68}, w.bytes()...), nil
+}
+
+func TestPPSScalingListCountSeparatePlane(t *testing.T) {
+	spsNAL := separatePlaneSPS()
+
+	sps, err := ParseSPSNALUnit(spsNAL, true)
+	if err != nil {
 		t.Fatalf("sps: %v", err)
 	}
-	if _, err := d.DecodeNALUs([][]byte{pps}); err != nil {
-		t.Fatalf("pps with 12 lists: %v", err)
+
+	ppsNAL, err := ppsWithScaling(spsNAL, true, true, 12)
+	if err != nil {
+		t.Fatalf("build pps: %v", err)
 	}
 
-	// six list present flags when transform8x8 is off, even for 4:4:4
-	w2 := &spsBitWriter{}
-	w2.ue(0)
-	w2.ue(0)
-	w2.bit(0)
-	w2.bit(0)
-	w2.ue(0)
-	w2.ue(0)
-	w2.ue(0)
-	w2.bit(0)
-	w2.u(0, 2)
-	w2.ue(0)
-	w2.ue(0)
-	w2.ue(0)
-	w2.bit(0)
-	w2.bit(0)
-	w2.bit(0)
-	w2.bit(0) // no transform8x8
-	w2.bit(1) // scaling matrix
-	for i := 0; i < 6; i++ {
-		w2.bit(0)
+	pps, err := ParsePPSNALUnit(ppsNAL, map[uint32]*SPS{sps.ParameterID: sps})
+	if err != nil {
+		t.Fatalf("parse pps: %v", err)
 	}
-	w2.ue(0)
-	pps2 := append([]byte{0x68}, w2.bytes()...)
 
-	if _, err := d.DecodeNALUs([][]byte{pps2}); err != nil {
-		t.Fatalf("pps with 6 lists: %v", err)
+	if len(pps.PicScalingLists) != 12 {
+		t.Fatalf("pic scaling lists %d, want 12", len(pps.PicScalingLists))
+	}
+
+	if got := pps.PicScalingLists[0]; got == nil || len(got) != 16 || got[0] != 9 || got[1] != 8 || got[15] != 8 {
+		t.Fatalf("first scaling list wrong: %v", got)
+	}
+
+	if pps.SecondChromaQpIndexOffset != 0 {
+		t.Errorf("second chroma qp offset %d, want 0", pps.SecondChromaQpIndexOffset)
+	}
+}
+
+func TestPPSScalingListCountNo8x8(t *testing.T) {
+	spsNAL := separatePlaneSPS()
+
+	sps, err := ParseSPSNALUnit(spsNAL, true)
+	if err != nil {
+		t.Fatalf("sps: %v", err)
+	}
+
+	// without transform8x8 the eight by eight lists are absent, six remain
+	ppsNAL, err := ppsWithScaling(spsNAL, false, true, 6)
+	if err != nil {
+		t.Fatalf("build pps: %v", err)
+	}
+
+	pps, err := ParsePPSNALUnit(ppsNAL, map[uint32]*SPS{sps.ParameterID: sps})
+	if err != nil {
+		t.Fatalf("parse pps: %v", err)
+	}
+
+	if len(pps.PicScalingLists) != 6 {
+		t.Fatalf("pic scaling lists %d, want 6", len(pps.PicScalingLists))
+	}
+
+	if got := pps.PicScalingLists[0]; got == nil || len(got) != 16 || got[0] != 9 || got[1] != 8 {
+		t.Fatalf("first scaling list wrong: %v", got)
+	}
+}
+
+func TestPPSScalingListsEightWith8x8(t *testing.T) {
+	sps, err := ParseSPSNALUnit(pcmSPS(), true)
+	if err != nil {
+		t.Fatalf("sps: %v", err)
+	}
+
+	// 4:2:0 keeps eight lists: six 4x4 and two 8x8 blocks, values checked too
+	ppsNAL, err := ppsWithScaling(pcmSPS(), true, true, 8)
+	if err != nil {
+		t.Fatalf("build pps: %v", err)
+	}
+
+	pps, err := ParsePPSNALUnit(ppsNAL, map[uint32]*SPS{sps.ParameterID: sps})
+	if err != nil {
+		t.Fatalf("parse pps: %v", err)
+	}
+
+	if len(pps.PicScalingLists) != 8 {
+		t.Fatalf("pic scaling lists %d, want 8", len(pps.PicScalingLists))
+	}
+
+	if got := pps.PicScalingLists[0]; got == nil || len(got) != 16 || got[0] != 9 {
+		t.Fatalf("first scaling list wrong: %v", got)
+	}
+
+	if pps.PicScalingLists[6] != nil {
+		t.Errorf("eight by eight list must stay nil")
 	}
 }
