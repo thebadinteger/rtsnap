@@ -550,14 +550,29 @@ func TestPickAuthChallengePrefersSHA256(t *testing.T) {
 		`Basic realm="r"`,
 		`Digest realm="r", nonce="n2", algorithm=SHA-256`,
 	}
-	got := pickAuthChallenge(values, "u", "p")
+	got := pickAuthChallenge(values)
 	if !strings.Contains(got, "SHA-256") || !strings.Contains(got, `nonce="n2"`) {
 		t.Fatalf("did not prefer sha-256: %s", got)
 	}
 
-	got = pickAuthChallenge([]string{`Digest realm="r", nonce="n1", algorithm=MD5`, `Basic realm="r"`}, "u", "p")
+	got = pickAuthChallenge([]string{`Digest realm="r", nonce="n1", algorithm=MD5`, `Basic realm="r"`})
 	if !strings.Contains(got, "MD5") {
 		t.Fatalf("did not prefer digest over basic: %s", got)
+	}
+
+	// a fully usable qop must win over a digest whose qop we cannot use
+	got = pickAuthChallenge([]string{
+		`Digest realm="r", nonce="n1", qop="auth-int"`,
+		`Digest realm="r", nonce="n2", qop="auth"`,
+	})
+	if !strings.Contains(got, `nonce="n2"`) {
+		t.Fatalf("did not prefer the usable qop: %s", got)
+	}
+
+	// basic beats a digest with an unusable qop
+	got = pickAuthChallenge([]string{`Digest realm="r", nonce="n1", qop="auth-int"`, `Basic realm="r"`})
+	if !strings.Contains(got, "Basic") {
+		t.Fatalf("did not prefer basic over the unusable digest: %s", got)
 	}
 }
 

@@ -122,35 +122,58 @@ func NewAuth(wwwAuth, username, password string) *Auth {
 	}
 }
 
-// prefer digest over basic, and sha-256 over md5
-func pickAuthChallenge(values []string, username, password string) string {
-	basic := ""
-	digest := ""
+// rank a challenge, higher is better:
+// usable digest 3 (sha-256 4), basic 2, digest with an unusable qop 1, else 0
+func authRank(header string) int {
+	params := parseAuthHeader(header)
+
+	if params["_scheme"] == "basic" {
+		return 2
+	}
+	if params["_scheme"] != "digest" {
+		return 0
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(params["algorithm"])) {
+	case "", "MD5", "MD5-SESS", "SHA-256", "SHA-256-SESS":
+	default:
+		return 0
+	}
+
+	sha := strings.HasPrefix(strings.ToUpper(params["algorithm"]), "SHA-256")
+
+	qop := strings.TrimSpace(params["qop"])
+	if qop == "" {
+		if sha {
+			return 4
+		}
+		return 3
+	}
+	for _, v := range strings.Split(qop, ",") {
+		if strings.EqualFold(strings.TrimSpace(v), "auth") {
+			if sha {
+				return 4
+			}
+			return 3
+		}
+	}
+	// an unsupported qop leaves a plain digest, which is weaker than basic
+	return 1
+}
+
+// return the best supported challenge
+func pickAuthChallenge(values []string) string {
+	best := ""
+	bestRank := 0
 
 	for _, v := range values {
-		params := parseAuthHeader(v)
-		switch params["_scheme"] {
-		case "digest":
-			if NewAuth(v, username, password) == nil {
-				continue
-			}
-			if strings.HasPrefix(strings.ToUpper(params["algorithm"]), "SHA-256") {
-				return v
-			}
-			if digest == "" {
-				digest = v
-			}
-		case "basic":
-			if basic == "" {
-				basic = v
-			}
+		rank := authRank(v)
+		if rank > bestRank {
+			best, bestRank = v, rank
 		}
 	}
 
-	if digest != "" {
-		return digest
-	}
-	return basic
+	return best
 }
 
 // server asks to repeat auth with a fresh nonce

@@ -48,6 +48,47 @@ func TestDecodeTinyIntra(t *testing.T) {
 	t.Logf("decoded h265 picture size: %dx%d", b.Dx(), b.Dy())
 }
 
+func TestGenerateUnavailableMarksCorrupt(t *testing.T) {
+	data, err := os.ReadFile("../../tests/testdata/tiny_intra.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+
+	var d Decoder
+	defer d.Close()
+
+	for _, nal := range SplitAnnexB(data) {
+		if _, err := d.DecodeNAL(nal); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+
+	var s *sps
+	for _, v := range d.sps {
+		s = v
+		break
+	}
+	if s == nil {
+		t.Skip("no sps decoded")
+	}
+
+	rps := &refPicSet{stCurrBefore: []int32{12345}}
+	d.generateUnavailable(rps, s)
+
+	found := false
+	for _, e := range d.dpb {
+		if e.pic.POC == 12345 {
+			found = true
+			if !e.pic.Corrupt {
+				t.Fatal("unavailable reference is not marked corrupt")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("unavailable reference was not stored")
+	}
+}
+
 func TestDecode1080p(t *testing.T) {
 	data, err := os.ReadFile("../../tests/testdata/1080p.h265")
 	if err != nil {
@@ -82,6 +123,56 @@ func TestDecode1080p(t *testing.T) {
 
 	b := img.Bounds()
 	t.Logf("decoded 1080p picture size: %dx%d", b.Dx(), b.Dy())
+}
+
+// reference pixels are decoded by ffmpeg with -color_range pc so the samples
+// are compared as stored, without a limited/full range conversion
+func TestDecodeGray(t *testing.T) {
+	data, err := os.ReadFile("../../tests/testdata/gray256.h265")
+	if err != nil {
+		t.Skip("testdata not found")
+	}
+	ref, err := os.ReadFile("../../tests/testdata/gray256.yuv")
+	if err != nil {
+		t.Skip("reference not found")
+	}
+
+	var d Decoder
+	defer d.Close()
+
+	var p *Picture
+	for _, nal := range SplitAnnexB(data) {
+		pics, err := d.DecodeNAL(nal)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		for _, x := range pics {
+			p = x
+		}
+	}
+	if p == nil {
+		for _, x := range d.Flush() {
+			p = x
+		}
+	}
+	if p == nil {
+		t.Fatal("no picture decoded")
+	}
+	defer p.Release()
+
+	if p.CropW*p.CropH != len(ref) {
+		t.Fatalf("picture %dx%d does not match reference %d", p.CropW, p.CropH, len(ref))
+	}
+
+	for y := 0; y < p.CropH; y++ {
+		row := p.Y[y*p.StrideY : y*p.StrideY+p.CropW]
+		want := ref[y*p.CropW : (y+1)*p.CropW]
+		for x := range row {
+			if row[x] != want[x] {
+				t.Fatalf("pixel %d,%d: got %d want %d", x, y, row[x], want[x])
+			}
+		}
+	}
 }
 
 func TestDecodeFrameSizeLimit(t *testing.T) {

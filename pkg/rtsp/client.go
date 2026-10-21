@@ -289,7 +289,7 @@ func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) 
 		return unauth, nil
 	}
 
-	challenge := pickAuthChallenge(values, c.user, c.pass)
+	challenge := pickAuthChallenge(values)
 	if challenge == "" {
 		return unauth, nil
 	}
@@ -556,7 +556,7 @@ func (c *Client) setupUDP(ctx context.Context) (*Response, error) {
 
 // send a first datagram so stateful firewalls let the camera stream back
 func (c *Client) openUDPPorts() {
-	if c.udpRTP == nil || c.udpRTPIP == nil || c.udpServerRTP == 0 {
+	if c.udpRTP == nil || c.udpRTCP == nil || c.udpRTPIP == nil || c.udpServerRTP == 0 {
 		return
 	}
 	rtp := &net.UDPAddr{IP: c.udpRTPIP, Port: c.udpServerRTP}
@@ -688,6 +688,8 @@ func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
 	}
 }
 
+// ReadRTPFrame reads the next frame on the negotiated rtp channel,
+// skipping interleaved rtcp and any other channel
 func (c *Client) ReadRTPFrame(ctx context.Context) (*Frame, error) {
 	for {
 		frame, err := c.ReadFrame(ctx)

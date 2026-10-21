@@ -112,7 +112,6 @@ type ctuDecoder struct {
 	ctbSliceAddr   []int32
 	sliceLF        []bool
 	ctbSlice       []int32
-	ctbDecoded     []bool
 	nextCTU        int
 	slices         []*sliceHeader
 	depSliceAddrRs int
@@ -199,7 +198,6 @@ func newCTUDecoder(prev *ctuDecoder, s *sps, p *pps, sh *sliceHeader, pic *Pictu
 
 		ctbSliceAddr: reuse(d.ctbSliceAddr, ctbs),
 		ctbSlice:     reuse(d.ctbSlice, ctbs),
-		ctbDecoded:   reuse(d.ctbDecoded, ctbs),
 		sao:          reuse(d.sao, ctbs),
 		sliceLF:      reuse(d.sliceLF, ctbs),
 

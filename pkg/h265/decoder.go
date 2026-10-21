@@ -408,7 +408,6 @@ func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 		if err := d.codingTreeUnit(x, y); err != nil {
 			return err
 		}
-		d.ctbDecoded[rs] = true
 		d.nextCTU = ts + 1
 
 		if wpp && rs%w == 1 {

@@ -347,6 +347,7 @@ func (d *Decoder) generateUnavailable(rps *refPicSet, s *sps) {
 
 		p := newPicture(sharedPool, s)
 		p.POC = int(poc)
+		p.Corrupt = true
 
 		for cIdx, plane := range [][]uint8{p.Y, p.Cb, p.Cr} {
 			mid := uint8(1) << (p.depth(cIdx) - 1)
