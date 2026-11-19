@@ -1,6 +1,9 @@
 package h264
 
-import "fmt"
+import (
+	"fmt"
+	"math/bits"
+)
 
 func DecodeCoeffToken(br *BitReader, nC int) (totalCoeff, trailingOnes int, err error) {
 	if nC == -1 {
@@ -64,20 +67,15 @@ func decodeChromaDCCoeffToken(br *BitReader) (totalCoeff, trailingOnes int, err 
 }
 
 func DecodeLevelPrefix(br *BitReader) (int, error) {
-	zeros := 0
-	for {
-		bit, err := br.ReadBit()
-		if err != nil {
-			return 0, fmt.Errorf("level_prefix: %w", err)
-		}
-		if bit == 1 {
-			return zeros, nil
-		}
-		zeros++
-		if zeros > 25 {
-			return 0, fmt.Errorf("level_prefix too long (%d)", zeros)
-		}
+	zeros := bits.LeadingZeros32(br.peek(32))
+	if zeros > 25 {
+		return 0, fmt.Errorf("level_prefix too long (%d)", zeros)
 	}
+	if zeros+1 > br.bitsLeft() {
+		return 0, fmt.Errorf("level_prefix: bitreader: end of data at byte %d", len(br.data))
+	}
+	br.SkipBits(zeros + 1)
+	return zeros, nil
 }
 
 func DecodeTotalZeros(br *BitReader, totalCoeff, maxNumCoeff int) (int, error) {
@@ -199,24 +197,23 @@ func DecodeRunBefore(br *BitReader, zerosLeft int) (int, error) {
 	return 0, fmt.Errorf("no matching run_before (zerosLeft=%d, peeked=0x%x)", zerosLeft, peeked)
 }
 
-func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, error) {
-	coeffs := make([]int32, maxNumCoeff)
-
+// decode one residual block into coeffs, which must be zeroed and hold maxNumCoeff entries
+func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int, coeffs []int32) (int, error) {
 	totalCoeff, trailingOnes, err := DecodeCoeffToken(br, nC)
 	if err != nil {
-		return coeffs, 0, fmt.Errorf("residual block: %w", err)
+		return 0, fmt.Errorf("residual block: %w", err)
 	}
 
 	if totalCoeff == 0 {
-		return coeffs, 0, nil
+		return 0, nil
 	}
 
-	levels := make([]int32, totalCoeff)
+	var levels [16]int32
 
 	for i := range trailingOnes {
 		sign, err := br.ReadBit()
 		if err != nil {
-			return coeffs, 0, fmt.Errorf("trailing_ones_sign: %w", err)
+			return 0, fmt.Errorf("trailing_ones_sign: %w", err)
 		}
 		if sign == 0 {
 			levels[i] = 1
@@ -233,7 +230,7 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 	for i := trailingOnes; i < totalCoeff; i++ {
 		levelPrefix, err := DecodeLevelPrefix(br)
 		if err != nil {
-			return coeffs, 0, fmt.Errorf("level[%d]: %w", i, err)
+			return 0, fmt.Errorf("level[%d]: %w", i, err)
 		}
 
 		var levelCode int
@@ -247,7 +244,7 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		if levelSuffixSize > 0 {
 			levelSuffix, err := br.ReadBits(levelSuffixSize)
 			if err != nil {
-				return coeffs, 0, fmt.Errorf("level_suffix[%d]: %w", i, err)
+				return 0, fmt.Errorf("level_suffix[%d]: %w", i, err)
 			}
 			clampedPrefix := min(levelPrefix, 15)
 			levelCode = (clampedPrefix << uint(suffixLength)) + int(levelSuffix)
@@ -288,7 +285,7 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 	if totalCoeff < maxNumCoeff {
 		zerosLeft, err = DecodeTotalZeros(br, totalCoeff, maxNumCoeff)
 		if err != nil {
-			return coeffs, 0, fmt.Errorf("total_zeros: %w", err)
+			return 0, fmt.Errorf("total_zeros: %w", err)
 		}
 	}
 
@@ -298,7 +295,7 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		if zerosLeft > 0 {
 			runBefore, err = DecodeRunBefore(br, zerosLeft)
 			if err != nil {
-				return coeffs, 0, fmt.Errorf("run_before[%d]: %w", i, err)
+				return 0, fmt.Errorf("run_before[%d]: %w", i, err)
 			}
 		}
 		if coeffIdx >= 0 && coeffIdx < maxNumCoeff {
@@ -311,5 +308,5 @@ func DecodeResidualBlock(br *BitReader, nC int, maxNumCoeff int) ([]int32, int, 
 		coeffs[coeffIdx] = levels[totalCoeff-1]
 	}
 
-	return coeffs, totalCoeff, nil
+	return totalCoeff, nil
 }

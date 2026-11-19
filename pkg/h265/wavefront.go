@@ -3,6 +3,7 @@ package h265
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 func (d *Decoder) Threads(n int) { d.threads = n }
@@ -44,6 +45,8 @@ type wave struct {
 	ctx  [][nContexts]uint8
 	err  error
 	bad  bool
+	// tile scan address after the last block of the segment
+	end int
 }
 
 func newWave(rows, first int) *wave {
@@ -122,6 +125,12 @@ func (d *ctuDecoder) decodeWavefront(nal NALUnit, sh *sliceHeader, starts []int,
 
 		go func() {
 			defer wg.Done()
+			// a panic on a worker would take the whole process down
+			defer func() {
+				if recover() != nil {
+					v.fail(ErrInvalid)
+				}
+			}()
 
 			r := *d
 
@@ -145,12 +154,13 @@ func (d *ctuDecoder) decodeWavefront(nal NALUnit, sh *sliceHeader, starts []int,
 		return v.err
 	}
 
+	// a segment may end in the middle of its last row
+	d.nextCTU = v.end
+
 	if rows > 1 {
 		d.saved = v.ctx[rows-1]
 		d.hasSaved = true
 	}
-
-	d.nextCTU = (first + rows) * w
 
 	return nil
 }
@@ -207,6 +217,7 @@ func (d *ctuDecoder) decodeWaveRow(nal NALUnit, sh *sliceHeader, starts []int, v
 				return ErrInvalid
 			}
 
+			v.end = rs + 1
 			v.advance(k, w)
 
 			return nil
@@ -219,6 +230,11 @@ func (d *ctuDecoder) decodeWaveRow(nal NALUnit, sh *sliceHeader, starts []int, v
 
 			v.advance(k, w)
 		}
+	}
+
+	// the last row has to carry the end of the segment
+	if k == len(starts)-1 {
+		return ErrInvalid
 	}
 
 	return nil
@@ -237,16 +253,26 @@ func (d *ctuDecoder) overRows(rows int, fn func(r0, r1 int)) {
 	chunk := (rows + n - 1) / n
 
 	var wg sync.WaitGroup
+	var broken atomic.Bool
 
 	for r0 := 0; r0 < rows; r0 += chunk {
 		wg.Add(1)
 
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if recover() != nil {
+					broken.Store(true)
+				}
+			}()
 
 			fn(r0, min(r0+chunk, rows))
 		}()
 	}
 
 	wg.Wait()
+
+	if broken.Load() && d.pic != nil {
+		d.pic.Corrupt = true
+	}
 }

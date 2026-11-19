@@ -9,6 +9,8 @@ import (
 var (
 	// sdp carries no media tracks
 	ErrNoMedia = errors.New("no video tracks found in sdp")
+	// auto transport negotiated udp but no datagram got through
+	ErrUDPTimeout = errors.New("no rtp received over udp")
 )
 
 // server answered with a non success status

@@ -1,6 +1,12 @@
 package h264
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// largest frame size of any level, MaxFS of level 6.2
+const maxFrameSizeInMbs = 139264
 
 type Decoder struct {
 	spsMap         map[uint32]*SPS
@@ -13,6 +19,7 @@ type Decoder struct {
 	curFrame       *Frame
 	curSPS         *SPS
 	curPPS         *PPS
+	curHdr         SliceHeader
 	decodedMBCount int
 }
 
@@ -76,24 +83,17 @@ func buildScalingMatrices(sps *SPS, pps *PPS) ScalingMatrices {
 	}
 
 	if pps.PicScalingMatrixPresentFlag {
-		if sps.SeqScalingMatrixPresentFlag {
-			applyScalingList4x4(&sm.IntraY4x4, pps.PicScalingLists, 0)
-			applyScalingList4x4(&sm.IntraCb4x4, pps.PicScalingLists, 1)
-			applyScalingList4x4(&sm.IntraCr4x4, pps.PicScalingLists, 2)
-			applyScalingList8x8(&sm.IntraY8x8, pps.PicScalingLists, 6)
-		} else {
-			if !applyScalingList4x4(&sm.IntraY4x4, pps.PicScalingLists, 0) {
-				applyDefault4x4Intra(&sm.IntraY4x4)
-			}
-			if !applyScalingList4x4(&sm.IntraCb4x4, pps.PicScalingLists, 1) {
-				sm.IntraCb4x4 = sm.IntraY4x4
-			}
-			if !applyScalingList4x4(&sm.IntraCr4x4, pps.PicScalingLists, 2) {
-				sm.IntraCr4x4 = sm.IntraCb4x4
-			}
-			if !applyScalingList8x8(&sm.IntraY8x8, pps.PicScalingLists, 6) {
-				applyDefault8x8Intra(&sm.IntraY8x8)
-			}
+		if !applyScalingList4x4(&sm.IntraY4x4, pps.PicScalingLists, 0) && !sps.SeqScalingMatrixPresentFlag {
+			applyDefault4x4Intra(&sm.IntraY4x4)
+		}
+		if !applyScalingList4x4(&sm.IntraCb4x4, pps.PicScalingLists, 1) {
+			sm.IntraCb4x4 = sm.IntraY4x4
+		}
+		if !applyScalingList4x4(&sm.IntraCr4x4, pps.PicScalingLists, 2) {
+			sm.IntraCr4x4 = sm.IntraCb4x4
+		}
+		if !applyScalingList8x8(&sm.IntraY8x8, pps.PicScalingLists, 6) && !sps.SeqScalingMatrixPresentFlag {
+			applyDefault8x8Intra(&sm.IntraY8x8)
 		}
 	}
 
@@ -101,10 +101,14 @@ func buildScalingMatrices(sps *SPS, pps *PPS) ScalingMatrices {
 }
 
 func applyScalingList4x4(dst *[16]int32, lists []ScalingList, idx int) bool {
-	if idx >= len(lists) || lists[idx] == nil || len(lists[idx]) != 16 {
+	if idx >= len(lists) || lists[idx] == nil {
 		return false
 	}
 	sl := lists[idx]
+	if len(sl) != 16 {
+		applyDefault4x4Intra(dst)
+		return true
+	}
 	for k := range 16 {
 		dst[zigzag4x4[k]] = int32(sl[k])
 	}
@@ -112,10 +116,14 @@ func applyScalingList4x4(dst *[16]int32, lists []ScalingList, idx int) bool {
 }
 
 func applyScalingList8x8(dst *[64]int32, lists []ScalingList, idx int) bool {
-	if idx >= len(lists) || lists[idx] == nil || len(lists[idx]) != 64 {
+	if idx >= len(lists) || lists[idx] == nil {
 		return false
 	}
 	sl := lists[idx]
+	if len(sl) != 64 {
+		applyDefault8x8Intra(dst)
+		return true
+	}
 	for k := range 64 {
 		dst[zigzag8x8[k]] = int32(sl[k])
 	}
@@ -175,8 +183,8 @@ func (d *Decoder) DecodeNALUs(nalus [][]byte) (*Frame, error) {
 				return nil, fmt.Errorf("parse PPS: %w", err)
 			}
 			d.ppsMap[pps.PicParameterSetID] = pps
-		case NALU_IDR:
-			f, err := d.decodeIDR(nalu)
+		case NALU_IDR, NALU_NON_IDR:
+			f, err := d.decodeSlice(nalu)
 			if err != nil {
 				return nil, err
 			}
@@ -194,9 +202,26 @@ func (d *Decoder) DecodeAnnexB(data []byte) (*Frame, error) {
 	return d.DecodeNALUs(nalus)
 }
 
-func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
+// slice continues the picture started by the slice with header first
+func samePicture(first, sh *SliceHeader) bool {
+	return sh.IDR == first.IDR &&
+		sh.FrameNum == first.FrameNum &&
+		sh.PicParamID == first.PicParamID &&
+		sh.IDRPicID == first.IDRPicID &&
+		sh.PicOrderCntLsb == first.PicOrderCntLsb &&
+		sh.DeltaPicOrderCntBottom == first.DeltaPicOrderCntBottom &&
+		sh.DeltaPicOrderCnt == first.DeltaPicOrderCnt
+}
+
+// decode one slice of an intra picture, the frame is returned with its last slice
+func (d *Decoder) decodeSlice(nalu []byte) (*Frame, error) {
 	sh, err := ParseSliceHeader(nalu, d.spsMap, d.ppsMap)
 	if err != nil {
+		// an inter slice ends any intra picture in progress
+		d.Reset()
+		if errors.Is(err, ErrNotIntraSlice) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("parse slice header: %w", err)
 	}
 
@@ -205,19 +230,28 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 	}
 
 	pps := d.ppsMap[sh.PicParamID]
-	if pps.NumSliceGroupsMinus1 > 0 {
-		return nil, fmt.Errorf("slice groups not supported")
-	}
 	sps := d.spsMap[pps.SeqParameterSetID]
 
-	width := int(sps.Width)
-	height := int(sps.Height)
-	if err := d.checkFrameSize(width, height); err != nil {
+	if sps.ChromaFormatIDC > 1 || sps.BitDepthLumaMinus8 != 0 || sps.BitDepthChromaMinus8 != 0 {
+		d.Reset()
+		return nil, fmt.Errorf("%w: chroma format %d, bit depth %d", ErrUnsupported, sps.ChromaFormatIDC, sps.BitDepthLumaMinus8+8)
+	}
+	if sps.MbAdaptiveFrameFieldFlag || sh.FieldPicFlag {
+		d.Reset()
+		return nil, fmt.Errorf("%w: interlaced picture", ErrUnsupported)
+	}
+
+	mbWidth := int(sps.PicWidthInMbs)
+	mbHeight := int(sps.FrameHeightInMbs)
+	if err := d.checkFrameSize(mbWidth*16, mbHeight*16); err != nil {
+		d.Reset()
 		return nil, err
 	}
-	mbWidth := (width + 15) / 16
-	mbHeight := (height + 15) / 16
 	totalMBs := mbWidth * mbHeight
+	if totalMBs > maxFrameSizeInMbs {
+		d.Reset()
+		return nil, fmt.Errorf("frame size %dx%d macroblocks exceeds level 6.2", mbWidth, mbHeight)
+	}
 
 	firstMB := int(sh.FirstMBInSlice)
 	if firstMB >= totalMBs {
@@ -228,7 +262,11 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 	if firstMB == 0 {
 		d.Reset()
 
-		f := NewFrame(width, height)
+		f := NewFrame(mbWidth*16, mbHeight*16)
+		f.Width = int(sps.Width)
+		f.Height = int(sps.Height)
+		f.CropLeft = int(sps.CropLeft)
+		f.CropTop = int(sps.CropTop)
 		if sps.VUI != nil {
 			if sps.VUI.ColourDescriptionFlag {
 				f.ColorDescriptionValid = true
@@ -240,34 +278,43 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 		chromaArrayType := 1
 		if sps.ChromaFormatIDC == 0 {
 			chromaArrayType = 0
+			// monochrome pictures decode to neutral chroma
+			for i := range f.Cb {
+				f.Cb[i] = 128
+				f.Cr[i] = 128
+			}
 		}
-		bitDepthY := 8 + int(sps.BitDepthLumaMinus8)
-		bitDepthC := 8 + int(sps.BitDepthChromaMinus8)
 
 		sc := &SliceContext{
-			MBWidth:              mbWidth,
-			MBHeight:             mbHeight,
-			TotalMBs:             totalMBs,
-			MBs:                  getMBs(totalMBs),
-			Transform8x8ModeFlag: pps.Transform8x8ModeFlag,
-			ChromaArrayType:      chromaArrayType,
-			BitDepthY:            bitDepthY,
-			BitDepthC:            bitDepthC,
-			ChromaQpIndexOffset:  int(pps.ChromaQpIndexOffset),
-			TraceMBCMP:           d.TraceMBCMP,
+			MBWidth:                   mbWidth,
+			MBHeight:                  mbHeight,
+			TotalMBs:                  totalMBs,
+			MBs:                       getMBs(totalMBs),
+			Transform8x8ModeFlag:      pps.Transform8x8ModeFlag,
+			ChromaArrayType:           chromaArrayType,
+			BitDepthY:                 8,
+			BitDepthC:                 8,
+			ChromaQpIndexOffset:       int(pps.ChromaQpIndexOffset),
+			SecondChromaQpIndexOffset: int(pps.SecondChromaQpIndexOffset),
+			TraceMBCMP:                d.TraceMBCMP,
 		}
+
+		sc.frame = f
+		sc.sm = buildScalingMatrices(sps, pps)
 
 		d.curSliceCtx = sc
 		d.curFrame = f
 		d.curSPS = sps
 		d.curPPS = pps
+		d.curHdr = *sh
 		d.decodedMBCount = 0
+	} else if d.curSliceCtx == nil || firstMB != d.decodedMBCount || !samePicture(&d.curHdr, sh) {
+		// a slice is missing or this one belongs to another picture
+		d.Reset()
+		return nil, nil
 	} else {
-		// Subsequent slice
-		if d.curSliceCtx == nil || firstMB != d.decodedMBCount {
-			d.Reset()
-			return nil, nil
-		}
+		// a picture is decoded with the parameter sets of its first slice
+		pps = d.curPPS
 	}
 
 	sliceQPY := 26 + int(pps.PicInitQpMinus26) + int(sh.SliceQPDelta)
@@ -276,51 +323,30 @@ func (d *Decoder) decodeIDR(nalu []byte) (*Frame, error) {
 	sc.DeblockAlpha = int(sh.SliceAlphaC0OffsetDiv2) * 2
 	sc.DeblockBeta = int(sh.SliceBetaOffsetDiv2) * 2
 
+	var lastMB int
 	if pps.EntropyCodingModeFlag {
 		sliceData := removeEBSPPrevention(nalu[sh.Size:])
-		lastMB, err2 := decodeSliceCABAC(sc, sliceData, sliceQPY, firstMB)
-		if err2 != nil {
-			d.Reset()
-			return nil, fmt.Errorf("decode slice data (CABAC): %w", err2)
-		}
-		d.decodedMBCount = lastMB
-	} else {
-		fullData := removeEBSPPrevention(nalu)
-		br := NewBitReader(fullData)
-
-		err = br.SkipSliceHeaderIDR(SliceHeaderParams{
-			FrameMbsOnly:                          sps.FrameMbsOnlyFlag,
-			Log2MaxFrameNumMinus4:                 uint(sps.Log2MaxFrameNumMinus4),
-			PicOrderCntType:                       uint(sps.PicOrderCntType),
-			Log2MaxPicOrderCntLsbMinus4:           uint(sps.Log2MaxPicOrderCntLsbMinus4),
-			BottomFieldPicOrderInFramePresentFlag: pps.BottomFieldPicOrderInFramePresentFlag,
-			DeblockingFilterControlPresent:        pps.DeblockingFilterControlPresentFlag,
-			RedundantPicCntPresentFlag:            pps.RedundantPicCntPresentFlag,
-		})
+		lastMB, err = decodeSliceCABAC(sc, sliceData, sliceQPY, firstMB)
 		if err != nil {
 			d.Reset()
-			return nil, fmt.Errorf("skip slice header (CAVLC): %w", err)
+			return nil, fmt.Errorf("decode slice data (CABAC): %w", err)
 		}
-
-		lastMB, err2 := decodeSliceCAVLC(sc, br, sliceQPY, firstMB)
-		if err2 != nil {
+	} else {
+		br := NewBitReader(removeEBSPPrevention(nalu))
+		br.SkipBits(int(sh.BitSize))
+		lastMB, err = decodeSliceCAVLC(sc, br, sliceQPY, firstMB)
+		if err != nil {
 			d.Reset()
-			return nil, fmt.Errorf("decode slice data (CAVLC): %w", err2)
+			return nil, fmt.Errorf("decode slice data (CAVLC): %w", err)
 		}
-		d.decodedMBCount = lastMB
 	}
+	d.decodedMBCount = lastMB
 
 	if d.decodedMBCount < sc.TotalMBs {
 		return nil, nil
 	}
 
 	f := d.curFrame
-	err = reconstructFrame(sc, f, sps, pps)
-	if err != nil {
-		d.Reset()
-		return nil, fmt.Errorf("reconstruct frame: %w", err)
-	}
-
 	if !d.SkipDeblock {
 		Deblock(f, sc)
 	}
@@ -350,71 +376,42 @@ func removeEBSPPrevention(data []byte) []byte {
 	return result
 }
 
-func reconstructFrame(sc *SliceContext, f *Frame, sps *SPS, pps *PPS) error {
-	sm := buildScalingMatrices(sps, pps)
+// reconstruct the macroblock that was just parsed, its levels are in sc.coeffs
+func reconstructMB(sc *SliceContext, mbIdx int) error {
+	f := sc.frame
+	sm := &sc.sm
+	mbX := mbIdx % sc.MBWidth
+	mbY := mbIdx / sc.MBWidth
+	mb := &sc.MBs[mbIdx]
 
-	for mbIdx := 0; mbIdx < sc.TotalMBs; mbIdx++ {
-		mbX := mbIdx % sc.MBWidth
-		mbY := mbIdx / sc.MBWidth
-		mb := &sc.MBs[mbIdx]
+	if mb.IsPCM {
+		return nil
+	}
 
-		if mb.IsPCM {
-			reconstructPCM(sc, f, mbX, mbY, mb)
-
-			continue
+	if mb.MBType >= 1 && mb.MBType <= 24 {
+		err := reconstructI16x16(sc, f, mbIdx, mbX, mbY, mb, sm)
+		if err != nil {
+			return fmt.Errorf("reconstruct I_16x16: %w", err)
 		}
-
-		if mb.MBType >= 1 && mb.MBType <= 24 {
-			err := reconstructI16x16(sc, f, mbIdx, mbX, mbY, mb, &sm)
+	} else if mb.MBType == MBTypeINxN {
+		if mb.TransformSize8x8 {
+			err := reconstructI8x8(sc, f, mbIdx, mbX, mbY, mb, sm)
 			if err != nil {
-				return fmt.Errorf("reconstruct I_16x16 mb %d: %w", mbIdx, err)
+				return fmt.Errorf("reconstruct I_8x8: %w", err)
 			}
-		} else if mb.MBType == MBTypeINxN {
-			if mb.TransformSize8x8 {
-				err := reconstructI8x8(sc, f, mbIdx, mbX, mbY, mb, &sm)
-				if err != nil {
-					return fmt.Errorf("reconstruct I_8x8 mb %d: %w", mbIdx, err)
-				}
-			} else {
-				err := reconstructI4x4(sc, f, mbIdx, mbX, mbY, mb, &sm)
-				if err != nil {
-					return fmt.Errorf("reconstruct I_4x4 mb %d: %w", mbIdx, err)
-				}
+		} else {
+			err := reconstructI4x4(sc, f, mbIdx, mbX, mbY, mb, sm)
+			if err != nil {
+				return fmt.Errorf("reconstruct I_4x4: %w", err)
 			}
 		}
+	}
 
-		if sc.ChromaArrayType != 0 {
-			reconstructChroma(sc, f, mbIdx, mbX, mbY, mb, &sm)
-		}
+	if sc.ChromaArrayType != 0 {
+		reconstructChroma(sc, f, mbIdx, mbX, mbY, mb, sm)
 	}
 
 	return nil
-}
-
-// pcm samples are already reconstructed, copy them into the frame planes
-func reconstructPCM(sc *SliceContext, f *Frame, mbX, mbY int, mb *MBData) {
-	x0 := mbX * 16
-	y0 := mbY * 16
-
-	for y := range 16 {
-		for x := range 16 {
-			f.SetLumaPixel(x0+x, y0+y, mb.PCMLuma[y*16+x])
-		}
-	}
-
-	if sc.ChromaArrayType == 0 {
-		return
-	}
-
-	cx0 := mbX * 8
-	cy0 := mbY * 8
-
-	for y := range 8 {
-		for x := range 8 {
-			f.SetChromaPixel(0, cx0+x, cy0+y, mb.PCMCb[y*8+x])
-			f.SetChromaPixel(1, cx0+x, cy0+y, mb.PCMCr[y*8+x])
-		}
-	}
 }
 
 func reconstructI16x16(sc *SliceContext, f *Frame,
@@ -427,6 +424,10 @@ func reconstructI16x16(sc *SliceContext, f *Frame,
 	}
 	if hasLeft {
 		leftSlice = left[:]
+	}
+	if (!hasTop && mb.IntraPredMode16x16 != Intra16x16Horizontal && mb.IntraPredMode16x16 != Intra16x16DC) ||
+		(!hasLeft && mb.IntraPredMode16x16 != Intra16x16Vertical && mb.IntraPredMode16x16 != Intra16x16DC) {
+		return fmt.Errorf("intra16x16 mode %d needs an unavailable neighbour", mb.IntraPredMode16x16)
 	}
 	predBlock := Predict16x16(mb.IntraPredMode16x16, topSlice, leftSlice, topLeft)
 
@@ -448,9 +449,19 @@ func reconstructI16x16(sc *SliceContext, f *Frame,
 		by := inverseRasterY4x4[i]
 
 		var block4x4 [16]int32
-		block4x4[0] = dcScaled[i]
-		for j := range 15 {
-			block4x4[zigzag4x4AC[j]] = mb.Intra16x16ACLevel[i][j]
+		nz := dcScaled[i]
+		if mb.CBPLuma != 0 {
+			for j := range 15 {
+				c := mb.Intra16x16ACLevel[i][j]
+				block4x4[zigzag4x4AC[j]] = c
+				nz |= c
+			}
+		}
+		if nz == 0 {
+			for y := range 4 {
+				copy(lumaBlock[by+y][bx:bx+4], predBlock[by+y][bx:bx+4])
+			}
+			continue
 		}
 
 		dequantBlock := Dequant4x4(block4x4, mb.QPY, sl)
@@ -487,7 +498,15 @@ func reconstructI4x4(sc *SliceContext, f *Frame,
 		}
 		ref := getLuma4x4Neighbors(f, x0+bx, y0+by, av)
 
-		predBlock := Predict4x4(mb.Intra4x4PredMode[i], ref, av.left, av.top)
+		predBlock := Predict4x4(int(mb.Intra4x4PredMode[i]), ref, av.left, av.top)
+
+		dst := f.Y[(y0+by)*f.StrideY+x0+bx:]
+		if mb.CBPLuma&(1<<uint(i/4)) == 0 {
+			for y := range 4 {
+				copy(dst[y*f.StrideY:][:4], predBlock[y][:])
+			}
+			continue
+		}
 
 		var coeffs [16]int32
 		for j := range 16 {
@@ -497,9 +516,9 @@ func reconstructI4x4(sc *SliceContext, f *Frame,
 		residual := InverseTransform4x4(dequant)
 
 		for y := range 4 {
+			row := dst[y*f.StrideY:][:4]
 			for x := range 4 {
-				val := int32(predBlock[y][x]) + residual[y*4+x]
-				f.SetLumaPixel(x0+bx+x, y0+by+y, clip8Int32(val))
+				row[x] = clip8Int32(int32(predBlock[y][x]) + residual[y*4+x])
 			}
 		}
 	}
@@ -521,7 +540,15 @@ func reconstructI8x8(sc *SliceContext, f *Frame,
 		av := lumaBlockAvail(bx, by, 8, nb)
 		ref := getLuma8x8Neighbors(f, x0+bx, y0+by, av)
 
-		predBlock := Predict8x8(mb.Intra8x8PredMode[i], ref, av.left, av.top)
+		predBlock := Predict8x8(int(mb.Intra8x8PredMode[i]), ref, av.left, av.top)
+
+		dst := f.Y[(y0+by)*f.StrideY+x0+bx:]
+		if mb.CBPLuma&(1<<uint(i)) == 0 {
+			for y := range 8 {
+				copy(dst[y*f.StrideY:][:8], predBlock[y][:])
+			}
+			continue
+		}
 
 		var coeffs [64]int32
 		if sc.IsCAVLC {
@@ -537,12 +564,11 @@ func reconstructI8x8(sc *SliceContext, f *Frame,
 		residual := InverseTransform8x8(dequant)
 
 		for y := range 8 {
+			row := dst[y*f.StrideY:][:8]
 			for x := range 8 {
-				val := int32(predBlock[y][x]) + residual[y*8+x]
-				f.SetLumaPixel(x0+bx+x, y0+by+y, clip8Int32(val))
+				row[x] = clip8Int32(int32(predBlock[y][x]) + residual[y*8+x])
 			}
 		}
-
 	}
 
 	return nil
@@ -632,12 +658,20 @@ func reconstructChroma(sc *SliceContext, f *Frame,
 			leftSlice = left[:]
 		}
 		predBlock := PredictChroma(mb.IntraChromaPredMode, topSlice, leftSlice, topLeft, 8)
+		if mb.CBPChroma == 0 {
+			f.SetChroma8x8(iCbCr, mbX, mbY, predBlock)
+			continue
+		}
 
 		var dcCoeffs [4]int32
 		copy(dcCoeffs[:], mb.ChromaDCLevel[iCbCr][:])
 		dcTransformed := InverseHadamard2x2(dcCoeffs)
 
-		qpc := chromaQP(mb.QPY + sc.ChromaQpIndexOffset)
+		qpOffset := sc.ChromaQpIndexOffset
+		if iCbCr == 1 {
+			qpOffset = sc.SecondChromaQpIndexOffset
+		}
+		qpc := chromaQP(mb.QPY + qpOffset)
 		dcScaled := DequantChromaDC2x2(dcTransformed, qpc, sl[0])
 
 		var chromaBlock [8][8]uint8
@@ -646,11 +680,19 @@ func reconstructChroma(sc *SliceContext, f *Frame,
 			by := (blk / 2) * 4
 
 			var block4x4 [16]int32
-			block4x4[0] = dcScaled[blk]
+			nz := dcScaled[blk]
 			if mb.CBPChroma > 1 {
 				for j := range 15 {
-					block4x4[zigzag4x4AC[j]] = mb.ChromaACLevel[iCbCr][blk][j]
+					c := mb.ChromaACLevel[iCbCr][blk][j]
+					block4x4[zigzag4x4AC[j]] = c
+					nz |= c
 				}
+			}
+			if nz == 0 {
+				for y := range 4 {
+					copy(chromaBlock[by+y][bx:bx+4], predBlock[by+y][bx:bx+4])
+				}
+				continue
 			}
 
 			dequant := Dequant4x4(block4x4, qpc, sl)

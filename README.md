@@ -25,7 +25,7 @@
 - Codecs support: `H.264 (AVC), H.265 (HEVC), MJPEG`
 - Basic and Digest auth support
 - Transports: `TCP interleaved, UDP unicast` 
-- Auto fallback with packet loss recovery
+- Auto fallback with packet loss and reordering recovery
 - HTTP/HTTPS tunneling for servers behind web ports
 
 ## Start  
@@ -134,14 +134,15 @@ func Query(ctx context.Context, rtspURL string, opts ...Option) (*StreamInfo, er
 ```
 Connects to the RTSP stream and queries available video tracks (codec, payload type, clock rate, control URL) without initiating streaming or frame decoding  
 ### Low-level responses
-`pkg/rtsp` exposes `DescribeRaw`, `SetupRaw`, `PlayRaw`, and `Do`, which return the `*rtsp.Response` even for non-success statuses; auth retry is allowed where state is negotiated (`Setup`/`Play`), so `session`, `Transport` and interleaved channels stay consistent. A rejected `401` with no usable credentials is returned as a plain response, never as a transport error. `ReadRTPFrame` is a low-level helper that returns the next `*rtsp.Frame` on the negotiated RTP channel, skipping interleaved RTCP and any other channel  
-Description helpers differ on purpose: `Describe` retries with the configured credentials and returns `*rtsp.StatusError` on non-`200`; `DescribeAuth` does the same but returns the response; `DescribeRaw` performs no auth retry and just returns the response, for callers that need the exact status and headers  
+`pkg/rtsp` exposes `DescribeRaw`, `SetupRaw`, `PlayRaw`, and `Do`, which return the `*rtsp.Response` even for non-success statuses; auth retry is allowed where state is negotiated (`Setup`/`Play`), so `session`, `Transport` and interleaved channels stay consistent. A rejected `401` with no usable credentials is returned as a plain response, never as a transport error  
+Reading media: `ReadPacket` returns the next RTP packet of the negotiated channel without copying it (the slice is valid until the next read), `ReadRTPFrame` and `ReadFrame` return an owned `*rtsp.Frame`. Interleaved RTCP, late responses, server requests and stray bytes between frames are skipped. `Teardown` sends the request and does not wait for the reply, it is meant to be followed by `Close`  
+Description helpers differ on purpose: `Describe` retries with the configured credentials, follows `3xx` redirects and returns `*rtsp.StatusError` on non-`200`; `DescribeAuth` retries with credentials but returns the response as is; `DescribeRaw` performs no auth retry and just returns the response, for callers that need the exact status and headers  
 ### Functional Options  
 - `WithAuth(username, password string)`: Sets credentials for HTTP Basic or Digest authentication
 - `WithTimeout(d time.Duration)`: Sets a client-side timeout that bounds the total operation duration
 - `WithCodec(c Codec)`: Selects a preferred video codec (`rtsnap.CodecH264`, `rtsnap.CodecH265`, `rtsnap.CodecMJPEG`, or `rtsnap.CodecAuto`). By default, `CodecAuto` selects the highest priority available codec (`H.264` > `H.265` > `MJPEG`)
 - `WithFast()`: Skips loop filters (`H.264` deblocking, `H.265` deblocking and SAO) for faster decoding with negligible quality loss on single snapshots
-- `WithTransport(t Transport)`: Selects RTP transport (`rtsnap.TransportTCP`, `rtsnap.TransportUDP`, `rtsnap.TransportAuto`). Defaults to TCP interleaved. `Auto` tries UDP first and falls back to TCP when the server rejects it
+- `WithTransport(t Transport)`: Selects RTP transport (`rtsnap.TransportTCP`, `rtsnap.TransportUDP`, `rtsnap.TransportAuto`). Defaults to TCP interleaved. `Auto` tries UDP first and falls back to TCP when the server rejects it or when no datagram arrives (NAT, firewall)
 - `WithTranscode()`: Forces MJPEG streams to be decoded and re-encoded in `SnapshotJPEG` (default is raw passthrough)
 - `WithUserAgent(ua string)`: Overrides the `User-Agent` header (default `rtsnap`), some picky servers require values like `VLC/3.0.16`
 - `WithDebugFunc(fn func(string))`: Receives raw RTSP request/response text as it happens
@@ -153,16 +154,18 @@ Description helpers differ on purpose: `Describe` retries with the configured cr
 
 | Codec | RFC | Profiles / Capabilities | Output Image Type | Documentation |
 |---|---|---|---|---|
-| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; CABAC, CAVLC, I_PCM, 4x4 & 8x8 intra, deblocking, scaling matrices | `*image.YCbCr` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
+| **H.264 (AVC)** | [RFC 6184](https://datatracker.ietf.org/doc/html/rfc6184) | Baseline, Main, High; IDR and non-IDR intra pictures, multi-slice, CABAC, CAVLC, I_PCM, 4x4 & 8x8 intra, deblocking, scaling matrices, frame cropping, monochrome | `*image.YCbCr` | [pkg/h264](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h264) |
 | **H.265 (HEVC)** | [RFC 7798](https://datatracker.ietf.org/doc/html/rfc7798) | Main Profile; 35 intra prediction modes, SAO, transform blocks up to 32x32, SIMD kernels (AVX2/NEON/RVV) | `*image.YCbCr` / `image.Image` | [pkg/h265](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/h265) |
-| **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables | `*image.YCbCr` / `*image.Gray` | [pkg/mjpeg](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/mjpeg) |
+| **MJPEG** | [RFC 2435](https://datatracker.ietf.org/doc/html/rfc2435) | Standard JPEG payload header, custom and standard quantization tables, ONVIF header extension for frames larger than 2040 pixels | `*image.YCbCr` / `*image.Gray` | [pkg/mjpeg](https://pkg.go.dev/github.com/thebadinteger/rtsnap/pkg/mjpeg) |
 
 ## Limitations
 - Video only: audio tracks are ignored, snapshots wait for the first decodable key frame
-- H.264 decoding covers the IDR/key frame only (no P/B), output is 8-bit 4:2:0
+- H.264 decoding covers intra pictures only (IDR and non-IDR I, no P/B), output is 8-bit 4:2:0. Interlaced (field, MBAFF), 4:2:2 / 4:4:4 and high bit depth streams are rejected with `h264.ErrUnsupported`
+- When time runs out before a frame could be decoded, the returned error carries the last decode error
 - H.265 decodes the full GOP including P/B, supports 8-10 bit and 4:2:0 / 4:2:2 / 4:4:4, `Image()` downshifts deep pictures to 8 bit
-- UDP transport filters RTP by the negotiated source IP, RTCP is ignored
-- Interleaved RTP/RTCP frames that arrive while an RTSP response is pending are not buffered
+- UDP transport filters RTP by the negotiated source IP and reorders packets within a small window, RTCP is ignored
+- RTP that arrives while an RTSP response is pending is kept (up to 4 MB), RTCP is dropped
+- Packets of a payload type other than the selected track are ignored
 - TLS verification is off by default (self-signed media servers), enable it with `WithTLSVerify()`
 
 ## Authentication
@@ -172,7 +175,8 @@ Description helpers differ on purpose: `Describe` retries with the configured cr
    - Supported quality of protection: `qop="auth"` and `qop="auth-int"` (integrity hashing over request bodies)
    - Automatic nonce tracking, cnonce generation, and request counter (`nc`) management
 
-Credentials are supplied via `WithAuth("user", "pass")` or in the URL: `rtsp://user:pass@0.0.0.0:554/live`
+Credentials are supplied via `WithAuth("user", "pass")` or in the URL: `rtsp://user:pass@0.0.0.0:554/live`  
+A password in the URL may contain reserved characters such as `@`, `#` or `%` without percent-encoding, only `/` has to be written as `%2F`. HTTP tunnels that ask for HTTP authentication are answered with the same credentials
 
 ## Specifications
 | Name | Area |
@@ -185,6 +189,7 @@ Credentials are supplied via `WithAuth("user", "pass")` or in the URL: `rtsp://u
 | [RFC2435, RTP Payload Format for JPEG-compressed Video](https://datatracker.ietf.org/doc/html/rfc2435) | payload formats / MJPEG |
 | [RFC7616, HTTP Digest Access Authentication](https://datatracker.ietf.org/doc/html/rfc7616) | digest authentication |
 | [RFC7617, HTTP Basic Authentication](https://datatracker.ietf.org/doc/html/rfc7617) | basic authentication |
+| [ONVIF Streaming Specification](https://www.onvif.org/specs/stream/ONVIF-Streaming-Spec.pdf) | JPEG over RTP header extension |
 
 ## Architecture  
 Library is organized in modules inside `pkg/` that can also be used independently:  
@@ -195,8 +200,8 @@ rtsnap/
 - pkg/
 -- rtsp/ # rtsp 1.0 client, basic/digest auth, sdp parser
 -- rtp/ # rtp packet parser, h264/h265/mjpeg depacketizers
--- h264/ # h.264 intra/idr decoder
--- h265/ # h.265 hevc intra decoder
+-- h264/ # h.264 intra decoder
+-- h265/ # h.265 hevc decoder
 -- mjpeg/ # mjpeg decoder
 - examples/ # runnable examples
 - tests/ # test suite

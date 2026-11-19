@@ -1,6 +1,9 @@
 package h264
 
-import "fmt"
+import (
+	"fmt"
+	"math/bits"
+)
 
 type BitReader struct {
 	data    []byte
@@ -29,6 +32,28 @@ func (r *BitReader) ReadBit() (uint8, error) {
 	return bit, nil
 }
 
+// next n bits without consuming them, zero padded past the end, n is at most 32
+func (r *BitReader) peek(n int) uint32 {
+	var v uint64
+	p := r.bytePos
+	if p+5 <= len(r.data) {
+		d := r.data[p : p+5 : p+5]
+		v = uint64(d[0])<<32 | uint64(d[1])<<24 | uint64(d[2])<<16 | uint64(d[3])<<8 | uint64(d[4])
+	} else {
+		for i := p; i < p+5; i++ {
+			v <<= 8
+			if i < len(r.data) {
+				v |= uint64(r.data[i])
+			}
+		}
+	}
+	return uint32(v>>(40-r.bitPos-uint(n))) & uint32(uint64(1)<<uint(n)-1)
+}
+
+func (r *BitReader) bitsLeft() int {
+	return len(r.data)*8 - r.bytePos*8 - int(r.bitPos)
+}
+
 func (r *BitReader) ReadBits(n int) (uint32, error) {
 	if n == 0 {
 		return 0, nil
@@ -36,14 +61,11 @@ func (r *BitReader) ReadBits(n int) (uint32, error) {
 	if n > 32 || n < 0 {
 		return 0, fmt.Errorf("bitreader: invalid n=%d", n)
 	}
-	var val uint32
-	for range n {
-		bit, err := r.ReadBit()
-		if err != nil {
-			return 0, err
-		}
-		val = (val << 1) | uint32(bit)
+	if n > r.bitsLeft() {
+		return 0, fmt.Errorf("bitreader: end of data at byte %d", len(r.data))
 	}
+	val := r.peek(n)
+	r.SkipBits(n)
 	return val, nil
 }
 
@@ -53,22 +75,7 @@ func (r *BitReader) ReadFlag() (bool, error) {
 }
 
 func (r *BitReader) PeekBits(n int) (uint32, error) {
-	savedBytePos := r.bytePos
-	savedBitPos := r.bitPos
-	var val uint32
-	bitsRead := 0
-	for range n {
-		bit, err := r.ReadBit()
-		if err != nil {
-			val <<= uint(n - bitsRead)
-			break
-		}
-		val = (val << 1) | uint32(bit)
-		bitsRead++
-	}
-	r.bytePos = savedBytePos
-	r.bitPos = savedBitPos
-	return val, nil
+	return r.peek(n), nil
 }
 
 func (r *BitReader) SkipBits(n int) {
@@ -78,25 +85,17 @@ func (r *BitReader) SkipBits(n int) {
 }
 
 func (r *BitReader) ReadUE() (uint32, error) {
-	leadingZeros := 0
-	for {
-		bit, err := r.ReadBit()
-		if err != nil {
-			return 0, fmt.Errorf("ue(v): %w", err)
-		}
-		if bit == 1 {
-			break
-		}
-		leadingZeros++
+	leadingZeros := bits.LeadingZeros32(r.peek(32))
+	if leadingZeros > 15 {
+		return 0, fmt.Errorf("ue(v): code too long")
 	}
-	if leadingZeros == 0 {
-		return 0, nil
+	n := 2*leadingZeros + 1
+	if n > r.bitsLeft() {
+		return 0, fmt.Errorf("ue(v): bitreader: end of data at byte %d", len(r.data))
 	}
-	suffix, err := r.ReadBits(leadingZeros)
-	if err != nil {
-		return 0, fmt.Errorf("ue(v) suffix: %w", err)
-	}
-	return (1 << uint(leadingZeros)) - 1 + suffix, nil
+	val := r.peek(n) - 1
+	r.SkipBits(n)
+	return val, nil
 }
 
 func (r *BitReader) ReadSE() (int32, error) {
@@ -115,116 +114,6 @@ func (r *BitReader) AlignToByte() {
 		r.bitPos = 0
 		r.bytePos++
 	}
-}
-
-type SliceHeaderParams struct {
-	FrameMbsOnly                          bool
-	Log2MaxFrameNumMinus4                 uint
-	PicOrderCntType                       uint
-	Log2MaxPicOrderCntLsbMinus4           uint
-	BottomFieldPicOrderInFramePresentFlag bool
-	DeblockingFilterControlPresent        bool
-	RedundantPicCntPresentFlag            bool
-	NumSliceGroupsMinus1                  uint
-}
-
-func (r *BitReader) SkipSliceHeaderIDR(p SliceHeaderParams) error {
-	_, err := r.ReadBits(8)
-	if err != nil {
-		return fmt.Errorf("nal header: %w", err)
-	}
-
-	_, err = r.ReadUE()
-	if err != nil {
-		return fmt.Errorf("first_mb_in_slice: %w", err)
-	}
-
-	_, err = r.ReadUE()
-	if err != nil {
-		return fmt.Errorf("slice_type: %w", err)
-	}
-
-	_, err = r.ReadUE()
-	if err != nil {
-		return fmt.Errorf("pps_id: %w", err)
-	}
-
-	_, err = r.ReadBits(int(p.Log2MaxFrameNumMinus4 + 4))
-	if err != nil {
-		return fmt.Errorf("frame_num: %w", err)
-	}
-
-	fieldPicFlag := false
-	if !p.FrameMbsOnly {
-		fieldPicFlag, err = r.ReadFlag()
-		if err != nil {
-			return fmt.Errorf("field_pic_flag: %w", err)
-		}
-		if fieldPicFlag {
-			_, err = r.ReadBit()
-			if err != nil {
-				return fmt.Errorf("bottom_field_flag: %w", err)
-			}
-		}
-	}
-
-	_, err = r.ReadUE()
-	if err != nil {
-		return fmt.Errorf("idr_pic_id: %w", err)
-	}
-
-	if p.PicOrderCntType == 0 {
-		_, err = r.ReadBits(int(p.Log2MaxPicOrderCntLsbMinus4 + 4))
-		if err != nil {
-			return fmt.Errorf("pic_order_cnt_lsb: %w", err)
-		}
-		if p.BottomFieldPicOrderInFramePresentFlag && !fieldPicFlag {
-			_, err = r.ReadSE()
-			if err != nil {
-				return fmt.Errorf("delta_pic_order_cnt_bottom: %w", err)
-			}
-		}
-	}
-
-	if p.RedundantPicCntPresentFlag {
-		_, err = r.ReadUE()
-		if err != nil {
-			return fmt.Errorf("redundant_pic_cnt: %w", err)
-		}
-	}
-
-	_, err = r.ReadBit()
-	if err != nil {
-		return fmt.Errorf("no_output_of_prior_pics_flag: %w", err)
-	}
-	_, err = r.ReadBit()
-	if err != nil {
-		return fmt.Errorf("long_term_reference_flag: %w", err)
-	}
-
-	_, err = r.ReadSE()
-	if err != nil {
-		return fmt.Errorf("slice_qp_delta: %w", err)
-	}
-
-	if p.DeblockingFilterControlPresent {
-		disableDeblockingFilterIdc, err := r.ReadUE()
-		if err != nil {
-			return fmt.Errorf("disable_deblocking_filter_idc: %w", err)
-		}
-		if disableDeblockingFilterIdc != 1 {
-			_, err = r.ReadSE()
-			if err != nil {
-				return fmt.Errorf("slice_alpha: %w", err)
-			}
-			_, err = r.ReadSE()
-			if err != nil {
-				return fmt.Errorf("slice_beta: %w", err)
-			}
-		}
-	}
-
-	return nil
 }
 
 func (r *BitReader) HasMoreRBSPData() bool {

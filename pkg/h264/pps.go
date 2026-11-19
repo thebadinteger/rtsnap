@@ -1,10 +1,8 @@
 package h264
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 )
 
 type PPS struct {
@@ -13,14 +11,6 @@ type PPS struct {
 	EntropyCodingModeFlag                 bool
 	BottomFieldPicOrderInFramePresentFlag bool
 	NumSliceGroupsMinus1                  uint
-	SliceGroupMapType                     uint
-	RunLengthMinus1                       []uint
-	TopLeft                               []uint
-	BottomRight                           []uint
-	SliceGroupChangeDirectionFlag         bool
-	SliceGroupChangeRateMinus1            uint
-	PicSizeInMapUnitsMinus1               uint
-	SliceGroupID                          []uint
 	NumRefIdxI0DefaultActiveMinus1        uint
 	NumRefIdxI1DefaultActiveMinus1        uint
 	WeightedPredFlag                      bool
@@ -42,12 +32,9 @@ var (
 )
 
 func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
-	var err error
-
 	pps := &PPS{}
 
-	rd := bytes.NewReader(data)
-	reader := NewEBSPReader(rd)
+	reader := NewEBSPReader(data)
 
 	naluHdr := reader.Read(8)
 	naluType := GetNaluType(byte(naluHdr))
@@ -60,34 +47,17 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 	pps.EntropyCodingModeFlag = reader.ReadFlag()
 	pps.BottomFieldPicOrderInFramePresentFlag = reader.ReadFlag()
 	pps.NumSliceGroupsMinus1 = reader.ReadExpGolomb()
-
-	if pps.NumSliceGroupsMinus1 > 0 {
-		pps.SliceGroupMapType = reader.ReadExpGolomb()
-		switch pps.SliceGroupMapType {
-		case 0:
-			for iGroup := uint(0); iGroup <= pps.NumSliceGroupsMinus1; iGroup++ {
-				rl := reader.ReadExpGolomb()
-				pps.RunLengthMinus1 = append(pps.RunLengthMinus1, rl)
-			}
-		case 2:
-			for iGroup := uint(0); iGroup <= pps.NumSliceGroupsMinus1; iGroup++ {
-				tl := reader.ReadExpGolomb()
-				pps.TopLeft = append(pps.TopLeft, tl)
-				br := reader.ReadExpGolomb()
-				pps.BottomRight = append(pps.BottomRight, br)
-			}
-		case 3, 4, 5:
-			pps.SliceGroupChangeDirectionFlag = reader.ReadFlag()
-			pps.SliceGroupChangeRateMinus1 = reader.ReadExpGolomb()
-		case 6:
-			nrBits := CeilLog2(pps.NumSliceGroupsMinus1 + 1)
-
-			for iGroup := uint(0); iGroup <= pps.NumSliceGroupsMinus1; iGroup++ {
-				sgi := reader.Read(nrBits)
-				pps.SliceGroupID = append(pps.SliceGroupID, sgi)
-			}
-		}
+	if err := reader.AccError(); err != nil {
+		return nil, err
 	}
+	if pps.NumSliceGroupsMinus1 > 0 {
+		// the slice group map is not parsed, slices of such a pps are rejected
+		if pps.NumSliceGroupsMinus1 > 7 {
+			return nil, fmt.Errorf("invalid num_slice_groups_minus1: %d", pps.NumSliceGroupsMinus1)
+		}
+		return pps, nil
+	}
+
 	pps.NumRefIdxI0DefaultActiveMinus1 = reader.ReadExpGolomb()
 	pps.NumRefIdxI1DefaultActiveMinus1 = reader.ReadExpGolomb()
 	pps.WeightedPredFlag = reader.ReadFlag()
@@ -95,70 +65,62 @@ func ParsePPSNALUnit(data []byte, spsMap map[uint32]*SPS) (*PPS, error) {
 	pps.PicInitQpMinus26 = reader.ReadSignedGolomb()
 	pps.PicInitQsMinus26 = reader.ReadSignedGolomb()
 	pps.ChromaQpIndexOffset = reader.ReadSignedGolomb()
+	// inferred equal to chroma_qp_index_offset when not present
+	pps.SecondChromaQpIndexOffset = pps.ChromaQpIndexOffset
 	pps.DeblockingFilterControlPresentFlag = reader.ReadFlag()
 	pps.ConstrainedIntraPredFlag = reader.ReadFlag()
 	pps.RedundantPicCntPresentFlag = reader.ReadFlag()
-	if !reader.IsSeeker() {
+	if err := reader.AccError(); err != nil {
+		return nil, err
+	}
+	if pps.NumRefIdxI0DefaultActiveMinus1 > 31 || pps.NumRefIdxI1DefaultActiveMinus1 > 31 ||
+		pps.PicInitQpMinus26 < -26 || pps.PicInitQpMinus26 > 25 ||
+		pps.ChromaQpIndexOffset < -12 || pps.ChromaQpIndexOffset > 12 {
+		return nil, fmt.Errorf("pps value out of range")
+	}
+
+	sps := spsMap[pps.SeqParameterSetID]
+	// baseline, main and extended streams have no pps extension, trailing bytes there are garbage
+	if sps != nil && (sps.Profile == 66 || sps.Profile == 77 || sps.Profile == 88) && sps.ProfileCompatibility&0xe0 != 0 {
 		return pps, nil
 	}
-	moreRbsp, err := reader.MoreRbspData()
-	if err != nil {
-		if reader.AccError() != nil {
-			return nil, reader.AccError()
+	if !reader.MoreRbspData() {
+		return pps, nil
+	}
+
+	pps.Transform8x8ModeFlag = reader.ReadFlag()
+	pps.PicScalingMatrixPresentFlag = reader.ReadFlag()
+	if pps.PicScalingMatrixPresentFlag {
+		// six 4x4 lists always, plus two 8x8 with transform8x8 and four more for 4:4:4, not chroma array type
+		nrScalingLists := 6
+		if pps.Transform8x8ModeFlag {
+			nrScalingLists += 2
+
+			if sps != nil && sps.ChromaFormatIDC == 3 {
+				nrScalingLists += 4
+			}
 		}
+
+		pps.PicScalingLists = make([]ScalingList, nrScalingLists)
+
+		for i := 0; i < nrScalingLists; i++ {
+			if !reader.ReadFlag() {
+				continue
+			}
+			sizeOfScalingList := 16
+			if i >= 6 {
+				sizeOfScalingList = 64
+			}
+			pps.PicScalingLists[i] = readScalingList(reader, sizeOfScalingList)
+		}
+	}
+	pps.SecondChromaQpIndexOffset = reader.ReadSignedGolomb()
+
+	if err := reader.AccError(); err != nil {
 		return nil, err
 	}
-
-	if moreRbsp {
-		pps.Transform8x8ModeFlag = reader.ReadFlag()
-		pps.PicScalingMatrixPresentFlag = reader.ReadFlag()
-		if pps.PicScalingMatrixPresentFlag {
-			// six 4x4 lists always, plus two 8x8 with transform8x8 and four more for 4:4:4, not chroma array type
-			chroma := 1
-			if sps, ok := spsMap[pps.SeqParameterSetID]; ok {
-				chroma = int(sps.ChromaFormatIDC)
-			}
-
-			nrScalingLists := 6
-			if pps.Transform8x8ModeFlag {
-				nrScalingLists += 2
-
-				if chroma == 3 {
-					nrScalingLists += 4
-				}
-			}
-
-			pps.PicScalingLists = make([]ScalingList, nrScalingLists)
-
-			for i := 0; i < nrScalingLists; i++ {
-				picScalingPresent := reader.ReadFlag()
-				if !picScalingPresent {
-					pps.PicScalingLists[i] = nil
-					continue
-				}
-				sizeOfScalingList := 16
-				if i >= 6 {
-					sizeOfScalingList = 64
-				}
-				pps.PicScalingLists[i] = readScalingList(reader, sizeOfScalingList)
-			}
-		}
-		pps.SecondChromaQpIndexOffset = reader.ReadSignedGolomb()
-	}
-
-	err = reader.ReadRbspTrailingBits()
-	if err != nil {
-		if reader.AccError() != nil {
-			return nil, reader.AccError()
-		}
-		return nil, err
-	}
-	if reader.AccError() != nil {
-		return nil, reader.AccError()
-	}
-	_ = reader.Read(1)
-	if reader.AccError() != io.EOF {
-		return nil, fmt.Errorf("not at end after reading rbsp_trailing_bits")
+	if pps.SecondChromaQpIndexOffset < -12 || pps.SecondChromaQpIndexOffset > 12 {
+		return nil, fmt.Errorf("second_chroma_qp_index_offset %d out of range", pps.SecondChromaQpIndexOffset)
 	}
 	return pps, nil
 }

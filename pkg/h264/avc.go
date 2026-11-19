@@ -5,15 +5,15 @@ import "fmt"
 type NaluType uint16
 
 const (
-	NALU_NON_IDR = NaluType(1)
-	NALU_IDR = NaluType(5)
-	NALU_SEI = NaluType(6)
-	NALU_SPS = NaluType(7)
-	NALU_PPS = NaluType(8)
-	NALU_AUD = NaluType(9)
-	NALU_EO_SEQ = NaluType(10)
+	NALU_NON_IDR   = NaluType(1)
+	NALU_IDR       = NaluType(5)
+	NALU_SEI       = NaluType(6)
+	NALU_SPS       = NaluType(7)
+	NALU_PPS       = NaluType(8)
+	NALU_AUD       = NaluType(9)
+	NALU_EO_SEQ    = NaluType(10)
 	NALU_EO_STREAM = NaluType(11)
-	NALU_FILL = NaluType(12)
+	NALU_FILL      = NaluType(12)
 )
 
 func (a NaluType) String() string {

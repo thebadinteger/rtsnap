@@ -1,19 +1,12 @@
 package rtp
 
-import (
-	"encoding/binary"
-	"fmt"
-)
+import "fmt"
 
 type H264Depacketizer struct {
-	fragments [][]byte
-	naluType  uint8
-	nri       uint8
-	fbit      uint8
-	lastSeq   uint16
-	hasSeq    bool
-	fragBytes int
-	MaxBytes  int
+	// nal unit being reassembled from fu-a fragments
+	buf      []byte
+	seq      seqState
+	MaxBytes int
 }
 
 func (d *H264Depacketizer) maxBytes() int {
@@ -23,60 +16,41 @@ func (d *H264Depacketizer) maxBytes() int {
 	return maxAssembledBytes
 }
 
-// drop collected fragments and release their backing buffers
-func (d *H264Depacketizer) dropFragments() {
-	for i := range d.fragments {
-		d.fragments[i] = nil
-	}
-	d.fragments = d.fragments[:0]
-	d.fragBytes = 0
-}
-
 // fresh h264 depacketizer state
 func NewH264Depacketizer() *H264Depacketizer {
 	return &H264Depacketizer{}
 }
 
-// reassemble nal units from rtp packet
+// reassemble nal units from rtp packet, the returned units do not alias the packet
 func (d *H264Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 	if len(pkt.Payload) == 0 {
 		return nil, nil
 	}
 
-	nalType := pkt.Payload[0] & 0x1f
-
-	if d.hasSeq && pkt.SequenceNumber == d.lastSeq {
+	dup, gap := d.seq.next(pkt.SequenceNumber)
+	if dup {
 		return nil, nil
 	}
-	if d.hasSeq && pkt.SequenceNumber-d.lastSeq != 1 {
-		d.dropFragments()
+	if gap {
+		d.buf = d.buf[:0]
 	}
-	d.lastSeq = pkt.SequenceNumber
-	d.hasSeq = true
+
+	nalType := pkt.Payload[0] & 0x1f
 
 	switch {
 	case nalType >= 1 && nalType <= 23:
-		d.dropFragments()
-		nalu := make([]byte, len(pkt.Payload))
-		copy(nalu, pkt.Payload)
-		return [][]byte{nalu}, nil
+		d.buf = d.buf[:0]
+		return [][]byte{append([]byte(nil), pkt.Payload...)}, nil
+
+	case nalType == 0:
+		// annex b framing inside the payload starts with a zero byte
+		d.buf = d.buf[:0]
+		return splitAnnexB(nil, append([]byte(nil), pkt.Payload...)), nil
 
 	case nalType == 24:
-		d.dropFragments()
-		var nalus [][]byte
-		buf := pkt.Payload[1:]
-		for len(buf) >= 2 {
-			size := int(binary.BigEndian.Uint16(buf[:2]))
-			buf = buf[2:]
-			if size == 0 || len(buf) < size {
-				return nil, fmt.Errorf("stap-a truncated")
-			}
-			nalu := make([]byte, size)
-			copy(nalu, buf[:size])
-			nalus = append(nalus, nalu)
-			buf = buf[size:]
-		}
-		if len(buf) > 0 {
+		d.buf = d.buf[:0]
+		nalus := splitAggregate(pkt.Payload[1:])
+		if len(nalus) == 0 {
 			return nil, fmt.Errorf("stap-a truncated")
 		}
 		return nalus, nil
@@ -90,43 +64,26 @@ func (d *H264Depacketizer) Decode(pkt *Packet) ([][]byte, error) {
 		header := pkt.Payload[1]
 		start := (header & 0x80) != 0
 		end := (header & 0x40) != 0
-		subType := header & 0x1f
 
 		if start {
-			d.dropFragments()
-			d.naluType = subType
-			d.nri = indicator & 0x60
-			d.fbit = indicator & 0x80
+			d.buf = append(d.buf[:0], (indicator&0xe0)|(header&0x1f))
 		}
-		if len(d.fragments) == 0 && !start {
+		if len(d.buf) == 0 {
 			return nil, nil
 		}
-		if d.fragBytes+len(pkt.Payload)-2 > d.maxBytes() {
-			d.dropFragments()
+		if len(d.buf)+len(pkt.Payload)-2 > d.maxBytes() {
+			d.buf = d.buf[:0]
 			return nil, fmt.Errorf("fu-a frame too large")
 		}
+		d.buf = appendFragment(d.buf, pkt.Payload[2:])
 
-		frag := make([]byte, len(pkt.Payload)-2)
-		copy(frag, pkt.Payload[2:])
-		d.fragments = append(d.fragments, frag)
-		d.fragBytes += len(frag)
-
-		if end {
-			totalSize := 1
-			for _, f := range d.fragments {
-				totalSize += len(f)
-			}
-			nalu := make([]byte, totalSize)
-			nalu[0] = d.fbit | d.nri | d.naluType
-			offset := 1
-			for _, f := range d.fragments {
-				copy(nalu[offset:], f)
-				offset += len(f)
-			}
-			d.dropFragments()
-			return [][]byte{nalu}, nil
+		if !end {
+			return nil, nil
 		}
-		return nil, nil
+		// the caller owns the unit from here on
+		nalu := d.buf
+		d.buf = nil
+		return splitAnnexB(nil, nalu), nil
 
 	default:
 		return nil, nil

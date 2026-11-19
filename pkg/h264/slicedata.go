@@ -46,7 +46,13 @@ func decodeSliceCABAC(sc *SliceContext, sliceData []byte, sliceQPY int, firstMB 
 		sc.MBs[mbIdx].DeblockIDC = sc.DeblockIDC
 		sc.MBs[mbIdx].DeblockAlpha = sc.DeblockAlpha
 		sc.MBs[mbIdx].DeblockBeta = sc.DeblockBeta
+		sc.coeffs = MBCoeffs{}
+		sc.MBs[mbIdx].MBCoeffs = &sc.coeffs
 		err := decodeMacroblock(sc, mbIdx)
+		if err == nil {
+			err = reconstructMB(sc, mbIdx)
+		}
+		sc.MBs[mbIdx].MBCoeffs = nil
 		if err != nil {
 			return lastMB, fmt.Errorf("mb %d: %w", mbIdx, err)
 		}
@@ -90,12 +96,12 @@ func decodeMacroblock(sc *SliceContext, mbIdx int) error {
 				prevFlag, rem := DecodeIntra8x8PredMode(sc)
 				predicted := derivePredIntra8x8PredMode(sc, mbIdx, i)
 				if prevFlag {
-					mb.Intra8x8PredMode[i] = predicted
+					mb.Intra8x8PredMode[i] = int8(predicted)
 				} else {
 					if rem >= predicted {
-						mb.Intra8x8PredMode[i] = rem + 1
+						mb.Intra8x8PredMode[i] = int8(rem + 1)
 					} else {
-						mb.Intra8x8PredMode[i] = rem
+						mb.Intra8x8PredMode[i] = int8(rem)
 					}
 				}
 			}
@@ -104,12 +110,12 @@ func decodeMacroblock(sc *SliceContext, mbIdx int) error {
 				prevFlag, rem := DecodeIntra4x4PredMode(sc)
 				predicted := derivePredIntra4x4PredMode(sc, mbIdx, i)
 				if prevFlag {
-					mb.Intra4x4PredMode[i] = predicted
+					mb.Intra4x4PredMode[i] = int8(predicted)
 				} else {
 					if rem >= predicted {
-						mb.Intra4x4PredMode[i] = rem + 1
+						mb.Intra4x4PredMode[i] = int8(rem + 1)
 					} else {
-						mb.Intra4x4PredMode[i] = rem
+						mb.Intra4x4PredMode[i] = int8(rem)
 					}
 				}
 			}
@@ -256,38 +262,29 @@ func decodeResidualMB(sc *SliceContext, mbIdx int) error {
 	return nil
 }
 
-// chroma samples per plane for the mb chroma array size in use
-func pcmChromaCount(chromaArrayType int) int {
-	switch chromaArrayType {
-	case 0:
-		return 0
-	case 1:
-		return 64
-	case 2:
-		return 128
-	default:
+// bytes of pcm samples in one macroblock
+func pcmSampleCount(chromaArrayType int) int {
+	if chromaArrayType == 0 {
 		return 256
 	}
+	return 384
 }
 
-func readPCMSamples(sc *SliceContext, mb *MBData, data []byte, off int) {
-	shiftY := uint(0)
-	if sc.BitDepthY > 8 {
-		shiftY = uint(sc.BitDepthY - 8)
+// pcm samples are the reconstructed picture, copy them straight into the frame
+func readPCMSamples(sc *SliceContext, mbIdx int, data []byte) {
+	f := sc.frame
+	x0 := (mbIdx % sc.MBWidth) * 16
+	y0 := (mbIdx / sc.MBWidth) * 16
+	for y := range 16 {
+		copy(f.Y[(y0+y)*f.StrideY+x0:][:16], data[y*16:])
 	}
-	shiftC := uint(0)
-	if sc.BitDepthC > 8 {
-		shiftC = uint(sc.BitDepthC - 8)
+	if sc.ChromaArrayType == 0 {
+		return
 	}
-
-	for i := range 256 {
-		mb.PCMLuma[i] = data[off+i] >> shiftY
-	}
-
-	n := pcmChromaCount(sc.ChromaArrayType)
-	for i := range min(n, 64) {
-		mb.PCMCb[i] = data[off+256+i] >> shiftC
-		mb.PCMCr[i] = data[off+256+n+i] >> shiftC
+	for y := range 8 {
+		off := (y0/2+y)*f.StrideC + x0/2
+		copy(f.Cb[off:][:8], data[256+y*8:])
+		copy(f.Cr[off:][:8], data[320+y*8:])
 	}
 }
 
@@ -302,14 +299,32 @@ func decodeIPCM(sc *SliceContext, mbIdx int) error {
 	sc.PrevMBQPDeltaNonZero = false
 
 	off := dec.pos
-	count := 256 + 2*pcmChromaCount(sc.ChromaArrayType)
+	count := pcmSampleCount(sc.ChromaArrayType)
 	if off+count > len(dec.data) {
 		return fmt.Errorf("pcm samples overrun slice data at mb %d", mbIdx)
 	}
 
-	readPCMSamples(sc, mb, dec.data, off)
+	readPCMSamples(sc, mbIdx, dec.data[off:])
+	markPCMNeighborState(mb)
 
 	return dec.reinit(off + count)
+}
+
+// neighbour state of an i_pcm macroblock, every block counts as coded with 16 coefficients
+func markPCMNeighborState(mb *MBData) {
+	mb.CBPLuma = 15
+	mb.CBPChroma = 2
+	for i := range mb.NzCoeffLuma {
+		mb.NzCoeffLuma[i] = 16
+	}
+	for i := range mb.NzCoeffChroma {
+		mb.NzCoeffChroma[i] = 16
+	}
+	for c := range mb.CodedBlockFlag {
+		for i := range mb.CodedBlockFlag[c] {
+			mb.CodedBlockFlag[c][i] = 1
+		}
+	}
 }
 
 func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int) (int, error) {
@@ -325,7 +340,13 @@ func decodeSliceCAVLC(sc *SliceContext, br *BitReader, sliceQPY int, firstMB int
 		sc.MBs[mbIdx].DeblockIDC = sc.DeblockIDC
 		sc.MBs[mbIdx].DeblockAlpha = sc.DeblockAlpha
 		sc.MBs[mbIdx].DeblockBeta = sc.DeblockBeta
+		sc.coeffs = MBCoeffs{}
+		sc.MBs[mbIdx].MBCoeffs = &sc.coeffs
 		err := decodeMacroblockCAVLC(sc, mbIdx)
+		if err == nil {
+			err = reconstructMB(sc, mbIdx)
+		}
+		sc.MBs[mbIdx].MBCoeffs = nil
 		if err != nil {
 			return lastMB, fmt.Errorf("mb %d: %w", mbIdx, err)
 		}
@@ -370,12 +391,12 @@ func decodeMacroblockCAVLC(sc *SliceContext, mbIdx int) error {
 				}
 				predicted := derivePredIntra8x8PredMode(sc, mbIdx, i)
 				if prevFlag {
-					mb.Intra8x8PredMode[i] = predicted
+					mb.Intra8x8PredMode[i] = int8(predicted)
 				} else {
 					if rem >= predicted {
-						mb.Intra8x8PredMode[i] = rem + 1
+						mb.Intra8x8PredMode[i] = int8(rem + 1)
 					} else {
-						mb.Intra8x8PredMode[i] = rem
+						mb.Intra8x8PredMode[i] = int8(rem)
 					}
 				}
 			}
@@ -387,12 +408,12 @@ func decodeMacroblockCAVLC(sc *SliceContext, mbIdx int) error {
 				}
 				predicted := derivePredIntra4x4PredMode(sc, mbIdx, i)
 				if prevFlag {
-					mb.Intra4x4PredMode[i] = predicted
+					mb.Intra4x4PredMode[i] = int8(predicted)
 				} else {
 					if rem >= predicted {
-						mb.Intra4x4PredMode[i] = rem + 1
+						mb.Intra4x4PredMode[i] = int8(rem + 1)
 					} else {
-						mb.Intra4x4PredMode[i] = rem
+						mb.Intra4x4PredMode[i] = int8(rem)
 					}
 				}
 			}
@@ -467,28 +488,20 @@ func decodeResidualMBCAVLC(sc *SliceContext, mbIdx int) error {
 	if mb.MBType >= 1 && mb.MBType <= 24 {
 
 		nC := DeriveNC(sc, mbIdx, 0, false)
-		dcCoeffs, totalCoeff, err := DecodeResidualBlock(br, nC, 16)
-		if err != nil {
+		if _, err := DecodeResidualBlock(br, nC, 16, mb.Intra16x16DCLevel[:]); err != nil {
 			return fmt.Errorf("i16x16 DC: %w", err)
 		}
-		for i := range 16 {
-			mb.Intra16x16DCLevel[i] = dcCoeffs[i]
-		}
-		_ = totalCoeff
 
 		if mb.CBPLuma > 0 {
 			for i := range 16 {
 				i8x8 := i / 4
 				if mb.CBPLuma&(1<<uint(i8x8)) != 0 {
 					nC := DeriveNC(sc, mbIdx, i, false)
-					acCoeffs, tc, err := DecodeResidualBlock(br, nC, 15)
+					tc, err := DecodeResidualBlock(br, nC, 15, mb.Intra16x16ACLevel[i][:])
 					if err != nil {
 						return fmt.Errorf("i16x16 AC[%d]: %w", i, err)
 					}
-					for j := range 15 {
-						mb.Intra16x16ACLevel[i][j] = acCoeffs[j]
-					}
-					mb.NzCoeffLuma[i] = tc
+					mb.NzCoeffLuma[i] = uint8(tc)
 				}
 			}
 		}
@@ -499,14 +512,17 @@ func decodeResidualMBCAVLC(sc *SliceContext, mbIdx int) error {
 					for i4x4 := range 4 {
 						blkIdx := i8x8*4 + i4x4
 						nC := DeriveNC(sc, mbIdx, blkIdx, false)
-						subCoeffs, tc, err := DecodeResidualBlock(br, nC, 16)
+						var subCoeffs [16]int32
+						tc, err := DecodeResidualBlock(br, nC, 16, subCoeffs[:])
 						if err != nil {
 							return fmt.Errorf("i8x8[%d] sub[%d]: %w", i8x8, i4x4, err)
 						}
-						for j := range 16 {
-							mb.LumaLevel8x8[i8x8][zigzagScan8x8CAVLC[i4x4*16+j]] = subCoeffs[j]
+						if tc > 0 {
+							for j := range 16 {
+								mb.LumaLevel8x8[i8x8][zigzagScan8x8CAVLC[i4x4*16+j]] = subCoeffs[j]
+							}
 						}
-						mb.NzCoeffLuma[blkIdx] = tc
+						mb.NzCoeffLuma[blkIdx] = uint8(tc)
 					}
 				}
 			}
@@ -515,14 +531,11 @@ func decodeResidualMBCAVLC(sc *SliceContext, mbIdx int) error {
 				i8x8 := i / 4
 				if mb.CBPLuma&(1<<uint(i8x8)) != 0 {
 					nC := DeriveNC(sc, mbIdx, i, false)
-					coeffs, tc, err := DecodeResidualBlock(br, nC, 16)
+					tc, err := DecodeResidualBlock(br, nC, 16, mb.LumaLevel4x4[i][:])
 					if err != nil {
 						return fmt.Errorf("i4x4[%d]: %w", i, err)
 					}
-					for j := range 16 {
-						mb.LumaLevel4x4[i][j] = coeffs[j]
-					}
-					mb.NzCoeffLuma[i] = tc
+					mb.NzCoeffLuma[i] = uint8(tc)
 				}
 			}
 		}
@@ -530,12 +543,8 @@ func decodeResidualMBCAVLC(sc *SliceContext, mbIdx int) error {
 
 	if sc.ChromaArrayType != 0 && mb.CBPChroma > 0 {
 		for iCbCr := range 2 {
-			dcCoeffs, _, err := DecodeResidualBlock(br, -1, 4)
-			if err != nil {
+			if _, err := DecodeResidualBlock(br, -1, 4, mb.ChromaDCLevel[iCbCr][:]); err != nil {
 				return fmt.Errorf("chroma DC[%d]: %w", iCbCr, err)
-			}
-			for j := range 4 {
-				mb.ChromaDCLevel[iCbCr][j] = dcCoeffs[j]
 			}
 		}
 
@@ -544,14 +553,11 @@ func decodeResidualMBCAVLC(sc *SliceContext, mbIdx int) error {
 				for i := range 4 {
 					blkIdx := iCbCr*4 + i
 					nC := DeriveChromaNC(sc, mbIdx, blkIdx)
-					acCoeffs, tc, err := DecodeResidualBlock(br, nC, 15)
+					tc, err := DecodeResidualBlock(br, nC, 15, mb.ChromaACLevel[iCbCr][i][:])
 					if err != nil {
 						return fmt.Errorf("chroma AC[%d][%d]: %w", iCbCr, i, err)
 					}
-					for j := range 15 {
-						mb.ChromaACLevel[iCbCr][i][j] = acCoeffs[j]
-					}
-					mb.NzCoeffChroma[blkIdx] = tc
+					mb.NzCoeffChroma[blkIdx] = uint8(tc)
 				}
 			}
 		}
@@ -570,12 +576,13 @@ func decodeIPCMCAVLC(sc *SliceContext, mbIdx int) error {
 	mb.QPY = 0
 
 	off := br.bytePos
-	count := 256 + 2*pcmChromaCount(sc.ChromaArrayType)
+	count := pcmSampleCount(sc.ChromaArrayType)
 	if br.bitPos != 0 || off+count > len(br.data) {
 		return fmt.Errorf("pcm samples overrun slice data at mb %d", mbIdx)
 	}
 
-	readPCMSamples(sc, mb, br.data, off)
+	readPCMSamples(sc, mbIdx, br.data[off:])
+	markPCMNeighborState(mb)
 
 	br.bytePos += count
 

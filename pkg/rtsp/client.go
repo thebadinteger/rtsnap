@@ -4,18 +4,30 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	maxRedirects   = 3
+	maxEarlyBytes  = 4 << 20 // rtp kept while a response is pending
+	udpReadBuffer  = 2 << 20
+	udpProbeWait   = 2 * time.Second
+	teardownWait   = 500 * time.Millisecond
+	readBufferSize = maxFrameSize
 )
 
 type Client struct {
 	conn          net.Conn
 	reader        *bufio.Reader
 	cleanURL      string
+	controlURL    string
 	user          string
 	pass          string
 	cseq          int
@@ -35,8 +47,22 @@ type Client struct {
 	udpRTPIP      net.IP
 	udpServerRTP  int
 	udpServerRTCP int
+	udpSeen       bool
 	remoteIP      net.IP
 	tunnel        bool
+	secure        bool
+	dial          DialConfig
+
+	// bytes of the last peeked frame still sitting in the reader
+	pending int
+	// rtp packets that arrived ahead of a response
+	early      [][]byte
+	earlyBytes int
+
+	armed       bool
+	armDone     <-chan struct{}
+	armDeadline time.Time
+	disarmFn    func()
 }
 
 // dial settings overriding defaults
@@ -54,16 +80,9 @@ func Dial(ctx context.Context, rtspURL string, user, pass string, tlsSkipVerify 
 
 // open connection with explicit tls and tunnel settings
 func DialWithConfig(ctx context.Context, rtspURL string, user, pass string, cfg *DialConfig) (*Client, error) {
-	u, err := url.Parse(rtspURL)
+	u, err := parseURL(rtspURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid rtsp url: %w", err)
-	}
-
-	scheme := strings.ToLower(u.Scheme)
-	switch scheme {
-	case "rtsp", "rtsps", "http", "https":
-	default:
-		return nil, fmt.Errorf("unsupported url scheme: %s", u.Scheme)
+		return nil, err
 	}
 	if cfg == nil {
 		cfg = &DialConfig{}
@@ -78,8 +97,76 @@ func DialWithConfig(ctx context.Context, rtspURL string, user, pass string, cfg 
 		}
 	}
 
+	c := &Client{user: user, pass: pass, dial: *cfg}
+	if err := c.open(ctx, u); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// parse url, tolerating reserved characters in the credentials
+func parseURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Fragment != "" {
+		if lu := parseLooseURL(raw); lu != nil {
+			u, err = lu, nil
+		}
+	}
+	if err != nil {
+		// the wrapped error would repeat the url together with its password
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("invalid rtsp url: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "rtsp", "rtsps", "http", "https":
+	default:
+		return nil, fmt.Errorf("unsupported url scheme: %s", u.Scheme)
+	}
+	return u, nil
+}
+
+// split credentials at the last @ before the path, like most players do
+func parseLooseURL(raw string) *url.URL {
+	sep := strings.Index(raw, "://")
+	if sep < 0 {
+		return nil
+	}
+	rest := raw[sep+3:]
+	authority, path := rest, ""
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		authority, path = rest[:slash], rest[slash:]
+	}
+	at := strings.LastIndexByte(authority, '@')
+	if at < 0 {
+		return nil
+	}
+	u, err := url.Parse(raw[:sep+3] + authority[at+1:] + path)
+	if err != nil {
+		return nil
+	}
+	user, pass, hasPass := strings.Cut(authority[:at], ":")
+	if v, err := url.PathUnescape(user); err == nil {
+		user = v
+	}
+	if v, err := url.PathUnescape(pass); err == nil {
+		pass = v
+	}
+	if hasPass {
+		u.User = url.UserPassword(user, pass)
+	} else {
+		u.User = url.User(user)
+	}
+	return u
+}
+
+// connect to the server behind u and reset every per connection state
+func (c *Client) open(ctx context.Context, u *url.URL) error {
+	scheme := strings.ToLower(u.Scheme)
 	secure := scheme == "rtsps" || scheme == "https"
-	tunnel := cfg.Tunnel || scheme == "http" || scheme == "https"
+	tunnel := c.dial.Tunnel || scheme == "http" || scheme == "https"
 
 	reqScheme := scheme
 	switch scheme {
@@ -89,34 +176,39 @@ func DialWithConfig(ctx context.Context, rtspURL string, user, pass string, cfg 
 		reqScheme = "rtsps"
 	}
 
-	cleanURL := requestURL(u, reqScheme)
-
 	addr := dialAddr(u, scheme)
-	tlsCfg := tlsClientConfig(cfg.TLSConfig, u.Hostname(), secure)
+	tlsCfg := tlsClientConfig(c.dial.TLSConfig, u.Hostname(), secure)
 
 	var conn net.Conn
+	var err error
 	if tunnel {
-		conn, err = dialHTTPTunnel(ctx, addr, secure, tlsCfg, tunnelPath(u))
+		conn, err = dialHTTPTunnel(ctx, addr, secure, tlsCfg, tunnelPath(u), c.user, c.pass)
 	} else {
 		conn, err = dialSocket(ctx, addr, secure, tlsCfg)
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	c := &Client{
-		conn:       conn,
-		reader:     bufio.NewReaderSize(conn, 64*1024),
-		cleanURL:   cleanURL,
-		user:       user,
-		pass:       pass,
-		tunnel:     tunnel,
-		rtpChannel: 0,
-	}
+	c.conn = conn
+	c.reader = bufio.NewReaderSize(conn, readBufferSize)
+	c.cleanURL = requestURL(u, reqScheme)
+	c.controlURL = c.cleanURL
+	c.tunnel = tunnel
+	c.secure = secure
+	c.cseq = 0
+	c.session = ""
+	c.auth = nil
+	c.authTries = 0
+	c.rtpChannel = 0
+	c.pending = 0
+	c.early, c.earlyBytes = nil, 0
+	c.armed = false
+	c.remoteIP = nil
 	if ta, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
 		c.remoteIP = ta.IP
 	}
-	return c, nil
+	return nil
 }
 
 // rtsp request uri without credentials or fragment
@@ -194,27 +286,136 @@ func dialSocket(ctx context.Context, addr string, secure bool, cfg *tls.Config) 
 	return tc, nil
 }
 
-func (c *Client) nextCSeq() int {
-	c.cseq++
-	return c.cseq
+// bind socket deadlines to ctx, free when ctx did not change since the last call
+func (c *Client) arm(ctx context.Context) {
+	done := ctx.Done()
+	deadline, _ := ctx.Deadline()
+	if c.armed && done == c.armDone && deadline.Equal(c.armDeadline) {
+		return
+	}
+	c.disarm()
+	c.armed, c.armDone, c.armDeadline = true, done, deadline
+
+	conn, udp := c.conn, c.udpRTP
+	set := func(t time.Time) {
+		if conn != nil {
+			_ = conn.SetDeadline(t)
+		}
+		if udp != nil {
+			_ = udp.SetReadDeadline(t)
+		}
+	}
+	set(deadline)
+	if done == nil {
+		return
+	}
+
+	ran := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		set(time.Now())
+		close(ran)
+	})
+	c.disarmFn = func() {
+		// a callback already running must not outlive the next deadline
+		if !stop() {
+			<-ran
+		}
+	}
+}
+
+func (c *Client) disarm() {
+	if c.disarmFn != nil {
+		c.disarmFn()
+		c.disarmFn = nil
+	}
+	c.armed = false
+}
+
+// prefer the context error over the socket error it caused
+func ioError(ctx context.Context, err error) error {
+	if e := ctx.Err(); e != nil {
+		return e
+	}
+	if d, ok := ctx.Deadline(); ok && !time.Now().Before(d) && errors.Is(err, os.ErrDeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
+// drop the frame handed out by the previous read
+func (c *Client) consume() {
+	if c.pending > 0 {
+		_, _ = c.reader.Discard(c.pending)
+		c.pending = 0
+	}
+}
+
+// keep rtp that shows up before the response it was racing with
+func (c *Client) stash(channel int, payload []byte) {
+	if channel != c.rtpChannel || c.earlyBytes+len(payload) > maxEarlyBytes {
+		return
+	}
+	c.early = append(c.early, append([]byte(nil), payload...))
+	c.earlyBytes += len(payload)
 }
 
 func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
-	if d, ok := ctx.Deadline(); ok {
-		_ = c.conn.SetDeadline(d)
-		// a leftover deadline would poison later requests with a plain context
-		defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.arm(ctx)
+
+	rawReq := c.prepare(req)
+	if c.DebugFunc != nil {
+		c.DebugFunc("> " + string(rawReq))
+	}
+	if _, err := c.conn.Write(rawReq); err != nil {
+		return nil, ioError(ctx, err)
 	}
 
-	stop := context.AfterFunc(ctx, func() {
-		_ = c.conn.SetDeadline(time.Now())
-	})
-	defer stop()
+	for {
+		c.consume()
+		b, err := c.reader.Peek(1)
+		if err != nil {
+			return nil, ioError(ctx, err)
+		}
 
+		switch b[0] {
+		case magicByte:
+			// servers may start streaming before they answer play
+			channel, payload, size, err := peekFrame(c.reader)
+			if err != nil {
+				return nil, ioError(ctx, err)
+			}
+			c.pending = size
+			c.stash(channel, payload)
+			continue
+		case '\r', '\n':
+			_, _ = c.reader.Discard(1)
+			continue
+		}
+
+		res, rawRes, err := readResponse(c.reader)
+		if c.DebugFunc != nil && rawRes != "" {
+			c.DebugFunc("< " + rawRes)
+		}
+		if err == errServerRequest {
+			continue
+		}
+		if err != nil {
+			return nil, ioError(ctx, err)
+		}
+		return res, nil
+	}
+}
+
+// fill session headers and serialize
+func (c *Client) prepare(req *Request) []byte {
 	if req.Headers == nil {
 		req.Headers = make(map[string]string)
 	}
-	req.Headers["CSeq"] = strconv.Itoa(c.nextCSeq())
+	c.cseq++
+	req.Headers["CSeq"] = strconv.Itoa(c.cseq)
 	ua := c.UserAgent
 	if ua == "" {
 		ua = "rtsnap"
@@ -224,30 +425,10 @@ func (c *Client) send(ctx context.Context, req *Request) (*Response, error) {
 	if c.session != "" {
 		req.Headers["Session"] = c.session
 	}
-
 	if c.auth != nil {
 		req.Headers["Authorization"] = c.auth.GenerateBody(req.Method, req.URI, req.Body)
 	}
-
-	rawReq := req.Bytes()
-	if c.DebugFunc != nil {
-		c.DebugFunc("> " + string(rawReq))
-	}
-	if _, err := c.conn.Write(rawReq); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, err
-	}
-
-	res, rawRes, err := readResponse(c.reader)
-	if c.DebugFunc != nil && rawRes != "" {
-		c.DebugFunc("< " + rawRes)
-	}
-	if err != nil && ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	return res, err
+	return req.Bytes()
 }
 
 // send request with auth retry on 401 and stale nonce
@@ -261,11 +442,6 @@ func (c *Client) roundTrip(ctx context.Context, req *Request) (*Response, error)
 	}
 	c.authTries = 0
 	return res, nil
-}
-
-// raw round trip without automatic auth retry
-func (c *Client) rawRoundTrip(ctx context.Context, req *Request) (*Response, error) {
-	return c.send(ctx, req)
 }
 
 // rebuild request with credentials when challenged or stale
@@ -304,28 +480,51 @@ func (c *Client) authRetry(ctx context.Context, req *Request, unauth *Response) 
 	c.auth = auth
 	c.authTries++
 
-	// body was already sent once, send it again on the retry
-	if len(req.Body) > 0 {
-		req = &Request{Method: req.Method, URI: req.URI, Headers: req.Headers, Body: append([]byte(nil), req.Body...)}
-	}
 	return c.send(ctx, req)
 }
 
-// fetch stream description
+// fetch stream description, following redirects
 func (c *Client) Describe(ctx context.Context) error {
-	res, err := c.DescribeAuth(ctx)
+	for hop := 0; ; hop++ {
+		res, err := c.DescribeAuth(ctx)
+		if err != nil {
+			return err
+		}
+		if res.StatusCode == 200 {
+			return nil
+		}
+		location := res.Header("Location")
+		if res.StatusCode < 300 || res.StatusCode > 399 || location == "" || hop >= maxRedirects {
+			return newStatusError("describe", res)
+		}
+		if err := c.redirect(ctx, location); err != nil {
+			return err
+		}
+	}
+}
+
+// reconnect to the server named by a redirect
+func (c *Client) redirect(ctx context.Context, location string) error {
+	u, err := url.Parse(resolveURL(c.cleanURL, location))
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid redirect location: %q", location)
 	}
-	if res.StatusCode != 200 {
-		return newStatusError("describe", res)
+	switch strings.ToLower(u.Scheme) {
+	case "rtsps":
+	case "rtsp":
+		if c.secure {
+			return fmt.Errorf("refusing redirect from rtsps to rtsp")
+		}
+	default:
+		return fmt.Errorf("unsupported redirect scheme: %s", u.Scheme)
 	}
-	return nil
+	_ = c.Close()
+	return c.open(ctx, u)
 }
 
 // describe returning the response even for error statuses, no auth retry
 func (c *Client) DescribeRaw(ctx context.Context) (*Response, error) {
-	res, err := c.sendMethod(ctx, "DESCRIBE", c.cleanURL, map[string]string{"Accept": "application/sdp"})
+	res, err := c.send(ctx, c.describeRequest())
 	if err != nil {
 		return nil, fmt.Errorf("describe failed: %w", err)
 	}
@@ -334,11 +533,19 @@ func (c *Client) DescribeRaw(ctx context.Context) (*Response, error) {
 
 // describe with credentials when challenged
 func (c *Client) DescribeAuth(ctx context.Context) (*Response, error) {
-	res, err := c.Do(ctx, "DESCRIBE", c.cleanURL, map[string]string{"Accept": "application/sdp"}, nil)
+	res, err := c.roundTrip(ctx, c.describeRequest())
 	if err != nil {
 		return nil, fmt.Errorf("describe failed: %w", err)
 	}
 	return c.acceptDescribe(res)
+}
+
+func (c *Client) describeRequest() *Request {
+	return &Request{
+		Method:  "DESCRIBE",
+		URI:     c.cleanURL,
+		Headers: map[string]string{"Accept": "application/sdp"},
+	}
 }
 
 // parse sdp of a successful describe
@@ -349,16 +556,17 @@ func (c *Client) acceptDescribe(res *Response) (*Response, error) {
 
 	base := c.cleanURL
 	if cb := res.Header("Content-Base"); cb != "" {
-		base = cb
+		base = resolveURL(c.cleanURL, cb)
 	} else if cl := res.Header("Content-Location"); cl != "" {
-		base = cl
+		base = resolveURL(c.cleanURL, cl)
 	}
 
-	tracks, err := ParseSDP(res.Body, base)
+	tracks, control, err := parseSDP(res.Body, base)
 	if err != nil {
 		return res, fmt.Errorf("parse sdp: %w", err)
 	}
 	c.Tracks = tracks
+	c.controlURL = control
 	c.Track, _ = SelectTrack(tracks, "")
 	return res, nil
 }
@@ -372,16 +580,6 @@ func (c *Client) Do(ctx context.Context, method, uri string, headers map[string]
 		Body:    body,
 	}
 	return c.roundTrip(ctx, req)
-}
-
-// send a request without automatic auth retry
-func (c *Client) sendMethod(ctx context.Context, method, uri string, headers map[string]string) (*Response, error) {
-	req := &Request{
-		Method:  method,
-		URI:     uri,
-		Headers: headers,
-	}
-	return c.rawRoundTrip(ctx, req)
 }
 
 // negotiate media transport
@@ -421,6 +619,9 @@ func (c *Client) SetupRaw(ctx context.Context) (*Response, error) {
 			}
 			return res, nil
 		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
 
 	return c.setupTCP(ctx)
@@ -437,9 +638,9 @@ func (c *Client) storeSession(res *Response) {
 	c.session = strings.TrimSpace(sess)
 }
 
-// open adjacent udp port pair
+// open udp port pair, adjacent with an even rtp port when the os allows it
 func listenPair() (net.PacketConn, net.PacketConn, int, int, error) {
-	for range 16 {
+	for try := 0; ; try++ {
 		a, err := net.ListenPacket("udp", ":0")
 		if err != nil {
 			return nil, nil, 0, 0, err
@@ -451,54 +652,59 @@ func listenPair() (net.PacketConn, net.PacketConn, int, int, error) {
 		}
 		pa := a.LocalAddr().(*net.UDPAddr).Port
 		pb := b.LocalAddr().(*net.UDPAddr).Port
-		if pa%2 == 0 && pb == pa+1 {
+		if (pa%2 == 0 && pb == pa+1) || try >= 16 {
 			return a, b, pa, pb, nil
 		}
 		_ = a.Close()
 		_ = b.Close()
 	}
+}
 
-	a, err := net.ListenPacket("udp", ":0")
-	if err != nil {
-		return nil, nil, 0, 0, err
+// value of a transport header parameter
+func transportParam(trans, key string) (string, bool) {
+	for _, part := range strings.Split(trans, ";") {
+		k, v, _ := strings.Cut(strings.TrimSpace(part), "=")
+		if strings.EqualFold(strings.TrimSpace(k), key) {
+			return strings.TrimSpace(v), true
+		}
 	}
-	b, err := net.ListenPacket("udp", ":0")
+	return "", false
+}
+
+// parse a port or channel pair, a lone value implies the next one
+func transportPair(value string) (int, int, bool) {
+	first, second, isPair := strings.Cut(value, "-")
+	a, err := strconv.Atoi(strings.TrimSpace(first))
 	if err != nil {
-		_ = a.Close()
-		return nil, nil, 0, 0, err
+		return 0, 0, false
 	}
-	pa := a.LocalAddr().(*net.UDPAddr).Port
-	pb := b.LocalAddr().(*net.UDPAddr).Port
-	return a, b, pa, pb, nil
+	if !isPair {
+		return a, a + 1, true
+	}
+	b, err := strconv.Atoi(strings.TrimSpace(second))
+	if err != nil {
+		return 0, 0, false
+	}
+	return a, b, true
 }
 
 func udpServerPort(trans string) int {
-	for _, part := range strings.Split(trans, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "server_port=") {
-			ports := strings.TrimPrefix(part, "server_port=")
-			if dash := strings.IndexByte(ports, '-'); dash != -1 {
-				ports = ports[:dash]
-			}
-			if p, err := strconv.Atoi(strings.TrimSpace(ports)); err == nil {
-				return p
-			}
-		}
-	}
-	return 0
+	v, _ := transportParam(trans, "server_port")
+	port, _, _ := transportPair(v)
+	return port
 }
 
 // source address announced by the server, nil if absent
 func transportSource(trans string) net.IP {
-	for _, part := range strings.Split(trans, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "source=") {
-			value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(part, "source=")), `"`)
-			value = strings.Trim(value, "[]")
-			return net.ParseIP(value)
-		}
+	v, ok := transportParam(trans, "source")
+	if !ok {
+		return nil
 	}
-	return nil
+	ip := net.ParseIP(strings.Trim(strings.Trim(v, `"`), "[]"))
+	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
+		return nil
+	}
+	return ip
 }
 
 // accept rtp only from the negotiated peer address
@@ -510,7 +716,7 @@ func (c *Client) udpSourceOK(addr net.Addr) bool {
 	if !ok {
 		return false
 	}
-	return ua.IP.Equal(c.udpRTPIP)
+	return ua.IP.Equal(c.udpRTPIP) || (c.remoteIP != nil && ua.IP.Equal(c.remoteIP))
 }
 
 // drop udp sockets from a previous setup so repeated setups do not leak them
@@ -524,8 +730,10 @@ func (c *Client) closeUDP() {
 		c.udpRTCP = nil
 	}
 	c.udp = false
+	c.udpSeen = false
 	c.udpRTPIP = nil
 	c.udpServerRTP, c.udpServerRTCP = 0, 0
+	c.armed = false
 }
 
 // negotiate udp unicast transport
@@ -536,45 +744,47 @@ func (c *Client) setupUDP(ctx context.Context) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("setup udp listen: %w", err)
 	}
+	// a key frame arrives as one burst, the default buffer drops part of it
+	if uc, ok := rtpConn.(*net.UDPConn); ok {
+		_ = uc.SetReadBuffer(udpReadBuffer)
+	}
+	closePair := func() {
+		_ = rtpConn.Close()
+		_ = rtcpConn.Close()
+	}
 
 	req := &Request{
 		Method: "SETUP",
 		URI:    c.Track.Control,
 		Headers: map[string]string{
-			"Transport": fmt.Sprintf("RTP/AVP;unicast;client_port=%d-%d", rtpPort, rtcpPort),
+			"Transport": "RTP/AVP;unicast;client_port=" + strconv.Itoa(rtpPort) + "-" + strconv.Itoa(rtcpPort),
 		},
 	}
 
 	res, err := c.roundTrip(ctx, req)
 	if err != nil {
-		_ = rtpConn.Close()
-		_ = rtcpConn.Close()
+		closePair()
 		return nil, fmt.Errorf("setup failed: %w", err)
 	}
 	if res.StatusCode != 200 {
-		_ = rtpConn.Close()
-		_ = rtcpConn.Close()
+		closePair()
 		return res, nil
 	}
 
 	trans := res.Header("Transport")
-	if strings.Contains(trans, "RTP/AVP/TCP") {
-		_ = rtpConn.Close()
-		_ = rtcpConn.Close()
+	if _, interleaved := transportParam(trans, "interleaved"); interleaved || strings.Contains(strings.ToUpper(trans), "/TCP") {
+		closePair()
 		return res, fmt.Errorf("setup udp: server did not accept udp transport: %s", trans)
-	}
-	if udpServerPort(trans) == 0 {
-		_ = rtpConn.Close()
-		_ = rtcpConn.Close()
-		return nil, fmt.Errorf("setup udp: server did not provide server_port")
 	}
 
 	c.storeSession(res)
 	c.udpRTP = rtpConn
 	c.udpRTCP = rtcpConn
 	c.udp = true
-	c.udpServerRTP = udpServerPort(trans)
-	c.udpServerRTCP = c.udpServerRTP + 1
+	c.armed = false
+	if v, ok := transportParam(trans, "server_port"); ok {
+		c.udpServerRTP, c.udpServerRTCP, _ = transportPair(v)
+	}
 	c.udpRTPIP = transportSource(trans)
 	if c.udpRTPIP == nil {
 		c.udpRTPIP = c.remoteIP
@@ -613,28 +823,20 @@ func (c *Client) setupTCP(ctx context.Context) (*Response, error) {
 		return res, nil
 	}
 
+	// a missing header or channel pair means the requested one was taken as is
 	trans := res.Header("Transport")
-	if !strings.Contains(trans, "/TCP") {
+	if trans != "" && !strings.Contains(strings.ToUpper(trans), "/TCP") {
 		return res, fmt.Errorf("setup tcp: server did not accept interleaved transport: %s", trans)
 	}
 
-	rtpCh, rtcpCh := -1, -1
-	for _, part := range strings.Split(trans, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "interleaved=") {
-			chans := strings.TrimPrefix(part, "interleaved=")
-			if dash := strings.IndexByte(chans, '-'); dash != -1 {
-				a, errA := strconv.Atoi(strings.TrimSpace(chans[:dash]))
-				b, errB := strconv.Atoi(strings.TrimSpace(chans[dash+1:]))
-				if errA == nil && errB == nil {
-					rtpCh, rtcpCh = a, b
-				}
-			}
+	rtpCh := 0
+	if v, ok := transportParam(trans, "interleaved"); ok {
+		a, b, ok := transportPair(v)
+		// rtp and rtcp channels must be an adjacent pair within the 0-255 range
+		if !ok || a < 0 || b != a+1 || a > 254 {
+			return res, fmt.Errorf("setup tcp: invalid interleaved channels: %s", trans)
 		}
-	}
-	// rtp and rtcp channels must be an adjacent pair within the 0-255 range
-	if rtpCh < 0 || rtcpCh != rtpCh+1 || rtpCh > 254 {
-		return res, fmt.Errorf("setup tcp: invalid interleaved channels: %s", trans)
+		rtpCh = a
 	}
 
 	c.storeSession(res)
@@ -657,138 +859,142 @@ func (c *Client) Play(ctx context.Context) error {
 
 // play returning the response even for error statuses
 func (c *Client) PlayRaw(ctx context.Context) (*Response, error) {
-	res, err := c.Do(ctx, "PLAY", c.cleanURL, map[string]string{"Range": "npt=0.000-"}, nil)
+	if c.udp {
+		// punch before play so the very first packets are not filtered
+		c.openUDPPorts()
+	}
+	res, err := c.Do(ctx, "PLAY", c.controlURL, map[string]string{"Range": "npt=0.000-"}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("play failed: %w", err)
-	}
-	if res.StatusCode == 200 && c.udp {
-		c.openUDPPorts()
 	}
 	return res, nil
 }
 
-// read next interleaved frame
-func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
+// read next packet of any channel, valid until the next read
+func (c *Client) read(ctx context.Context) (int, []byte, error) {
+	if len(c.early) > 0 {
+		payload := c.early[0]
+		c.early[0] = nil
+		c.early = c.early[1:]
+		c.earlyBytes -= len(payload)
+		return c.rtpChannel, payload, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
+	c.arm(ctx)
+
 	if c.udp {
-		return c.readUDP(ctx)
+		payload, err := c.readUDP(ctx)
+		return c.rtpChannel, payload, err
 	}
-
-	if d, ok := ctx.Deadline(); ok {
-		_ = c.conn.SetReadDeadline(d)
-		defer func() { _ = c.conn.SetReadDeadline(time.Time{}) }()
-	}
-
-	stop := context.AfterFunc(ctx, func() {
-		_ = c.conn.SetReadDeadline(time.Now())
-	})
-	defer stop()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
+		c.consume()
 		b, err := c.reader.Peek(1)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			return nil, err
+			return 0, nil, ioError(ctx, err)
 		}
-
 		if b[0] == magicByte {
-			frame, err := readFrame(c.reader)
+			channel, payload, size, err := peekFrame(c.reader)
 			if err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				return nil, err
+				return 0, nil, ioError(ctx, err)
 			}
-			return frame, nil
+			c.pending = size
+			return channel, payload, nil
 		}
 
-		_, err = readLine(c.reader)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			return nil, err
+		// late responses, server requests and stray bytes are not media
+		if err := resync(c.reader); err != nil {
+			return 0, nil, ioError(ctx, err)
+		}
+		if b, _ := c.reader.Peek(1); len(b) == 1 && b[0] != magicByte {
+			_, _, _ = readResponse(c.reader)
 		}
 	}
 }
 
+// read next interleaved frame
+func (c *Client) ReadFrame(ctx context.Context) (*Frame, error) {
+	channel, payload, err := c.read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Frame{Channel: channel, Payload: append([]byte(nil), payload...)}, nil
+}
+
+// read next frame of the negotiated rtp channel
 func (c *Client) ReadRTPFrame(ctx context.Context) (*Frame, error) {
+	payload, err := c.ReadPacket(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Frame{Channel: c.rtpChannel, Payload: append([]byte(nil), payload...)}, nil
+}
+
+// read next rtp packet without copying, the slice is only valid until the next read
+func (c *Client) ReadPacket(ctx context.Context) ([]byte, error) {
 	for {
-		frame, err := c.ReadFrame(ctx)
+		channel, payload, err := c.read(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if frame.Channel == c.rtpChannel {
-			return frame, nil
+		if channel == c.rtpChannel {
+			return payload, nil
 		}
 	}
 }
 
 // read next udp datagram
-func (c *Client) readUDP(ctx context.Context) (*Frame, error) {
-	if d, ok := ctx.Deadline(); ok {
-		_ = c.udpRTP.SetReadDeadline(d)
-		defer func() { _ = c.udpRTP.SetReadDeadline(time.Time{}) }()
-	}
-
-	stop := context.AfterFunc(ctx, func() {
-		_ = c.udpRTP.SetReadDeadline(time.Now())
-	})
-	defer stop()
-
+func (c *Client) readUDP(ctx context.Context) ([]byte, error) {
 	if c.udpBuf == nil {
 		c.udpBuf = make([]byte, 64*1024)
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+	// with auto transport a silent udp path must fail early enough to retry over tcp
+	probing := c.Transport == TransportAuto && !c.udpSeen
+	if probing {
+		wait := udpProbeWait
+		if d, ok := ctx.Deadline(); ok {
+			wait = min(wait, time.Until(d)/3)
 		}
+		_ = c.udpRTP.SetReadDeadline(time.Now().Add(wait))
+		c.armed = false
+	}
 
+	for {
 		n, addr, err := c.udpRTP.ReadFrom(c.udpBuf)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+			if e := ctx.Err(); e != nil {
+				return nil, e
 			}
-			return nil, err
+			if probing && errors.Is(err, os.ErrDeadlineExceeded) {
+				return nil, ErrUDPTimeout
+			}
+			return nil, ioError(ctx, err)
 		}
 		if n <= 0 || !c.udpSourceOK(addr) {
 			continue
 		}
-
-		payload := make([]byte, n)
-		copy(payload, c.udpBuf[:n])
-		return &Frame{Channel: c.rtpChannel, Payload: payload}, nil
+		c.udpSeen = true
+		return c.udpBuf[:n], nil
 	}
 }
 
-// stop playback on server, clearing the stored session
-func (c *Client) Teardown(ctx context.Context) error {
-	if c.session == "" {
+// ask the server to stop, the reply is not awaited since the connection is closed right after
+func (c *Client) Teardown(_ context.Context) error {
+	if c.session == "" || c.conn == nil {
 		return nil
 	}
-	req := &Request{
-		Method: "TEARDOWN",
-		URI:    c.cleanURL,
-	}
-	res, err := c.send(ctx, req)
+	c.disarm()
+	rawReq := c.prepare(&Request{Method: "TEARDOWN", URI: c.controlURL})
 	c.session = ""
-	if err != nil {
-		return err
+	if c.DebugFunc != nil {
+		c.DebugFunc("> " + string(rawReq))
 	}
-	if res.StatusCode != 200 {
-		return newStatusError("teardown", res)
-	}
-	return nil
+	_ = c.conn.SetWriteDeadline(time.Now().Add(teardownWait))
+	_, err := c.conn.Write(rawReq)
+	return err
 }
 
 // active rtp channel number
@@ -796,8 +1002,14 @@ func (c *Client) RTPChannel() int {
 	return c.rtpChannel
 }
 
+// true when rtp is delivered over udp
+func (c *Client) UDP() bool {
+	return c.udp
+}
+
 // close all connections
 func (c *Client) Close() error {
+	c.disarm()
 	if c.udpRTP != nil {
 		_ = c.udpRTP.Close()
 	}
@@ -823,10 +1035,12 @@ func (c *Client) SelectTrack(codec string) (*MediaTrack, error) {
 // list codecs present in stream
 func (c *Client) AvailableCodecs() []string {
 	var res []string
-	seen := make(map[string]bool)
 	for _, t := range c.Tracks {
-		if !seen[t.Codec] {
-			seen[t.Codec] = true
+		seen := false
+		for _, codec := range res {
+			seen = seen || codec == t.Codec
+		}
+		if !seen {
 			res = append(res, t.Codec)
 		}
 	}

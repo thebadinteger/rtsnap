@@ -76,18 +76,30 @@ func (c *tunnelServerConn) SetDeadline(t time.Time) error      { return c.conn.S
 func (c *tunnelServerConn) SetReadDeadline(t time.Time) error  { return c.conn.SetReadDeadline(t) }
 func (c *tunnelServerConn) SetWriteDeadline(t time.Time) error { return c.conn.SetWriteDeadline(t) }
 
-// serve one http tunnel pair and run the rtsp mock over it
-func serveTunnel(s *mockServer, ln net.Listener, base64Responses bool) {
-	getConn, err := ln.Accept()
-	if err != nil {
-		return
+func serveTunnel(s *mockServer, ln net.Listener, base64Responses bool, auth string) {
+	var getConn net.Conn
+	var getReq *http.Request
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		req, err := http.ReadRequest(bufio.NewReader(conn))
+		if err != nil || req.Method != "GET" {
+			_ = conn.Close()
+			return
+		}
+		if auth == "" || req.Header.Get("Authorization") == auth {
+			getConn, getReq = conn, req
+			break
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 401 Unauthorized\r\n" +
+			"WWW-Authenticate: Basic realm=\"cam\"\r\n" +
+			"Content-Length: 0\r\n\r\n"))
+		_ = conn.Close()
 	}
 	defer getConn.Close()
 
-	getReq, err := http.ReadRequest(bufio.NewReader(getConn))
-	if err != nil || getReq.Method != "GET" {
-		return
-	}
 	cookie := getReq.Header.Get("X-Sessioncookie")
 	if cookie == "" {
 		return
@@ -112,6 +124,9 @@ func serveTunnel(s *mockServer, ln net.Listener, base64Responses bool) {
 	if postReq.Header.Get("X-Sessioncookie") != cookie {
 		return
 	}
+	if auth != "" && postReq.Header.Get("Authorization") != auth {
+		return
+	}
 
 	conn := &tunnelServerConn{
 		r:        &base64RequestReader{src: bufio.NewReader(postReq.Body)},
@@ -124,7 +139,33 @@ func serveTunnel(s *mockServer, ln net.Listener, base64Responses bool) {
 
 func newTunnelMock(t *testing.T, s *mockServer, ln net.Listener, base64Responses bool) {
 	t.Helper()
-	go serveTunnel(s, ln, base64Responses)
+	go serveTunnel(s, ln, base64Responses, "")
+}
+
+func TestSnapshotTunnelHTTPAuth(t *testing.T) {
+	server, err := newMockServer(&mockServer{codec: "h264", packets: h264Packets(t)})
+	if err != nil {
+		t.Fatalf("mock server: %v", err)
+	}
+	defer server.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("tunnel listen: %v", err)
+	}
+	defer ln.Close()
+	go serveTunnel(server, ln, false, "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:p@ss")))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	img, err := rtsnap.Snapshot(ctx, fmt.Sprintf("http://%s/live", ln.Addr()), rtsnap.WithAuth("admin", "p@ss"))
+	if err != nil {
+		t.Fatalf("tunnel snapshot behind http auth: %v", err)
+	}
+	if img == nil {
+		t.Fatal("expected non-nil image")
+	}
 }
 
 func h264Packets(t *testing.T) [][]byte {

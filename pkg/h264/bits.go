@@ -1,25 +1,15 @@
 package h264
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 )
 
-var (
-	ErrNotReadSeeker = errors.New("reader does not support Seek")
-)
+// longest exp-golomb prefix accepted, larger values cannot occur in valid headers
+const maxExpGolombLeadingZeroBits = 31
 
-func Mask(n int) uint {
-	if n <= 0 {
-		return 0
-	}
-	if n >= 64 {
-		return ^uint(0)
-	}
-	return (1 << n) - 1
-}
+var errExpGolombTooLong = errors.New("exp-golomb code too long")
 
 func CeilLog2(n uint) int {
 	for i := 0; i < 32; i++ {
@@ -35,19 +25,21 @@ const (
 	startCodeEmulationPreventionByte = 0x03
 )
 
+// bit reader over a nal unit that skips emulation prevention bytes
 type EBSPReader struct {
-	rd        io.Reader
+	data      []byte
 	err       error
 	n         int
-	v         uint
+	v         uint64
 	pos       int
 	zeroCount int
+	nrEPB     int
 }
 
-func NewEBSPReader(rd io.Reader) *EBSPReader {
+func NewEBSPReader(data []byte) *EBSPReader {
 	return &EBSPReader{
-		rd:  rd,
-		pos: -1,
+		data: data,
+		pos:  -1,
 	}
 }
 
@@ -59,39 +51,39 @@ func (r *EBSPReader) NrBytesRead() int {
 	return r.pos + 1
 }
 
+// bits consumed including emulation prevention bytes
 func (r *EBSPReader) NrBitsRead() int {
-	nrBits := r.NrBytesRead() * 8
-	if r.NrBitsReadInCurrentByte() != 8 {
-		nrBits += r.NrBitsReadInCurrentByte() - 8
-	}
-	return nrBits
+	return (r.pos+1)*8 - r.n
 }
 
-func (r *EBSPReader) NrBitsReadInCurrentByte() int {
-	return 8 - r.n
+// bits consumed of the payload with emulation prevention bytes removed
+func (r *EBSPReader) NrRBSPBitsRead() int {
+	return (r.pos+1-r.nrEPB)*8 - r.n
 }
 
 func (r *EBSPReader) Read(n int) uint {
 	if r.err != nil {
 		return 0
 	}
-	var err error
+	if n < 0 || n > 32 {
+		r.err = fmt.Errorf("invalid bit count %d", n)
+		return 0
+	}
 	for r.n < n {
-		r.v <<= 8
-		var b uint8
-		err = binary.Read(r.rd, binary.BigEndian, &b)
-		if err != nil {
-			r.err = err
+		if r.pos+1 >= len(r.data) {
+			r.err = io.EOF
 			return 0
 		}
 		r.pos++
+		b := r.data[r.pos]
 		if r.zeroCount == 2 && b == startCodeEmulationPreventionByte {
-			err = binary.Read(r.rd, binary.BigEndian, &b)
-			if err != nil {
-				r.err = err
+			if r.pos+1 >= len(r.data) {
+				r.err = io.EOF
 				return 0
 			}
 			r.pos++
+			r.nrEPB++
+			b = r.data[r.pos]
 			r.zeroCount = 0
 		}
 		if b != 0 {
@@ -99,31 +91,14 @@ func (r *EBSPReader) Read(n int) uint {
 		} else {
 			r.zeroCount++
 		}
-		r.v |= uint(b)
-
+		r.v = r.v<<8 | uint64(b)
 		r.n += 8
 	}
 	v := r.v >> uint(r.n-n)
-
 	r.n -= n
-	r.v &= Mask(r.n)
+	r.v &= 1<<uint(r.n) - 1
 
-	return v
-}
-
-func (r *EBSPReader) ReadBytes(n int) []byte {
-	if r.err != nil {
-		return nil
-	}
-	payload := make([]byte, n)
-	for i := 0; i < n; i++ {
-		b := byte(r.Read(8))
-		payload[i] = b
-	}
-	if r.err != nil {
-		return nil
-	}
-	return payload
+	return uint(v)
 }
 
 func (r *EBSPReader) ReadFlag() bool {
@@ -131,11 +106,7 @@ func (r *EBSPReader) ReadFlag() bool {
 }
 
 func (r *EBSPReader) ReadExpGolomb() uint {
-	if r.err != nil {
-		return 0
-	}
 	leadingZeroBits := 0
-
 	for {
 		b := r.Read(1)
 		if r.err != nil {
@@ -145,111 +116,46 @@ func (r *EBSPReader) ReadExpGolomb() uint {
 			break
 		}
 		leadingZeroBits++
+		if leadingZeroBits > maxExpGolombLeadingZeroBits {
+			r.err = errExpGolombTooLong
+			return 0
+		}
 	}
-
-	var res uint = (1 << leadingZeroBits) - 1
 
 	endBits := r.Read(leadingZeroBits)
 	if r.err != nil {
 		return 0
 	}
 
-	return res + endBits
+	return 1<<uint(leadingZeroBits) - 1 + endBits
 }
 
 func (r *EBSPReader) ReadSignedGolomb() int {
-	if r.err != nil {
-		return 0
-	}
 	unsignedGolomb := r.ReadExpGolomb()
-	if r.err != nil {
-		return 0
-	}
 	if unsignedGolomb%2 == 1 {
 		return int((unsignedGolomb + 1) / 2)
 	}
 	return -int(unsignedGolomb / 2)
 }
 
-func (r *EBSPReader) IsSeeker() bool {
-	_, ok := r.rd.(io.ReadSeeker)
-	return ok
-}
-
-func (r *EBSPReader) MoreRbspData() (bool, error) {
-	if !r.IsSeeker() {
-		return false, ErrNotReadSeeker
-	}
-	stateCopy := *r
-
-	firstBit := r.Read(1)
+// more_rbsp_data, false when only the stop bit and zero bits remain
+func (r *EBSPReader) MoreRbspData() bool {
 	if r.err != nil {
-		return false, nil
+		return false
 	}
-	if firstBit != 1 {
-		err := r.reset(stateCopy)
-		if err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-	more := false
-	for {
-		b := r.Read(1)
-		if r.err == io.EOF {
-			r.err = nil
-			break
-		}
-		if r.err != nil {
-			return false, nil
-		}
-		if b == 1 {
-			more = true
-			break
-		}
-	}
-	err := r.reset(stateCopy)
-	if err != nil {
-		return false, err
-	}
-	return more, nil
-}
+	saved := *r
+	defer func() { *r = saved }()
 
-func (r *EBSPReader) reset(prevState EBSPReader) error {
-	rdSeek, _ := r.rd.(io.ReadSeeker)
-	_, err := rdSeek.Seek(int64(prevState.pos+1), 0)
-	if err != nil {
-		return err
-	}
-	r.n = prevState.n
-	r.v = prevState.v
-	r.pos = prevState.pos
-	r.zeroCount = prevState.zeroCount
-	return nil
-}
-
-func (r *EBSPReader) ReadRbspTrailingBits() error {
-	if r.err != nil {
-		return nil
-	}
-	firstBit := r.Read(1)
-	if r.err != nil {
-		return nil
-	}
-	if firstBit != 1 {
-		return fmt.Errorf("rbspTrailingBits don't start with 1")
+	if r.Read(1) != 1 {
+		return r.err == nil
 	}
 	for {
 		b := r.Read(1)
-		if r.err == io.EOF {
-			r.err = nil
-			return nil
-		}
 		if r.err != nil {
-			return nil
+			return false
 		}
 		if b == 1 {
-			return fmt.Errorf("another 1 in RbspTrailingBits")
+			return true
 		}
 	}
 }

@@ -13,6 +13,10 @@ type Frame struct {
 	StrideY  int
 	StrideC  int
 
+	// top left corner of the Width x Height picture inside the coded planes
+	CropLeft int
+	CropTop  int
+
 	MatrixCoefficients    uint
 	VideoFullRangeFlag    bool
 	ColorDescriptionValid bool
@@ -92,15 +96,16 @@ func (f *Frame) Image() image.Image {
 }
 
 func (f *Frame) YCbCr() *image.YCbCr {
+	// crop offsets are even for 4:2:0
+	yOff := f.CropTop*f.StrideY + f.CropLeft
+	cOff := (f.CropTop/2)*f.StrideC + f.CropLeft/2
 	return &image.YCbCr{
-		Y:              f.Y,
-		Cb:             f.Cb,
-		Cr:             f.Cr,
+		Y:              f.Y[yOff:],
+		Cb:             f.Cb[cOff:],
+		Cr:             f.Cr[cOff:],
 		YStride:        f.StrideY,
 		CStride:        f.StrideC,
 		SubsampleRatio: image.YCbCrSubsampleRatio420,
 		Rect:           image.Rect(0, 0, f.Width, f.Height),
 	}
 }
-
-

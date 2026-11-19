@@ -180,6 +180,9 @@ func (d *ctuDecoder) deblock() {
 
 	for _, vertical := range []bool{true, false} {
 		d.overRows((h+7)/8, func(r0, r1 int) {
+			// one scratch block per worker, the kernels make it escape
+			turn := new([8 * 8]uint8)
+
 			for r := r0; r < r1; r++ {
 				y := r * 8
 
@@ -192,14 +195,14 @@ func (d *ctuDecoder) deblock() {
 						continue
 					}
 
-					d.deblockEdge(x, y, vertical)
+					d.deblockEdge(x, y, vertical, turn)
 				}
 			}
 		})
 	}
 }
 
-func (d *ctuDecoder) deblockEdge(x, y int, vertical bool) {
+func (d *ctuDecoder) deblockEdge(x, y int, vertical bool, turn *[8 * 8]uint8) {
 	ctb := 1<<d.s.ctbLog2SizeY - 1
 
 	across := x&ctb == 0
@@ -286,9 +289,9 @@ func (d *ctuDecoder) deblockEdge(x, y int, vertical bool) {
 	d.deblockChromaEdge(x, y, vertical, sl, &onC, &qpC, &noP, &noQ)
 
 	if deep {
-		deblockLumaEdge(luma16, base, line, step, plan, d.pic.BitDepth, noP, noQ)
+		deblockLumaEdge(luma16, base, line, step, plan, d.pic.BitDepth, noP, noQ, turn)
 	} else {
-		deblockLumaEdge(luma8, base, line, step, plan, d.pic.BitDepth, noP, noQ)
+		deblockLumaEdge(luma8, base, line, step, plan, d.pic.BitDepth, noP, noQ, turn)
 	}
 }
 
@@ -476,7 +479,7 @@ func deblockLumaApply[P pixel](plane []P, base, line, step int, pl lumaPlan,
 }
 
 func deblockLumaEdge[P pixel](plane []P, base, line, step int, pl [2]lumaPlan,
-	bitDepth int, noP, noQ [2]bool,
+	bitDepth int, noP, noQ [2]bool, turn *[8 * 8]uint8,
 ) {
 	if pl[0].mode == lumaNone && pl[1].mode == lumaNone {
 		return
@@ -495,7 +498,7 @@ func deblockLumaEdge[P pixel](plane []P, base, line, step int, pl [2]lumaPlan,
 					flags |= 2
 				}
 
-				if deblockLuma8(p8, base, line, step, mode, pl, flags) {
+				if deblockLuma8(p8, base, line, step, mode, pl, flags, turn) {
 					return
 				}
 			}
@@ -525,7 +528,7 @@ func lumaBoth(pl *[2]lumaPlan, noP, noQ *[2]bool) (uint8, bool) {
 	return pl[0].mode, pl[0].mode == pl[1].mode && noP[0] == noP[1] && noQ[0] == noQ[1]
 }
 
-func deblockLuma8(p []uint8, base, line, step int, mode uint8, pl [2]lumaPlan, flags int32) bool {
+func deblockLuma8(p []uint8, base, line, step int, mode uint8, pl [2]lumaPlan, flags int32, turn *[8 * 8]uint8) bool {
 	strong, normal := deblockStrongAsm, deblockNormalAsm
 	if strong == nil || normal == nil {
 		return false
@@ -550,7 +553,7 @@ func deblockLuma8(p []uint8, base, line, step int, mode uint8, pl [2]lumaPlan, f
 		return false
 	}
 
-	var buf [8 * 8]uint8
+	buf := turn
 
 	deblockTurnIn(buf[:], p[base-4:], line)
 

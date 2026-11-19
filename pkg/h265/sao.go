@@ -1,5 +1,7 @@
 package h265
 
+import "slices"
+
 const (
 	saoOff  = 0
 	saoBand = 1
@@ -198,6 +200,9 @@ func saoPlane[P pixel](d *ctuDecoder, plane []P, stride, cIdx int, src []P) {
 
 	copy(src[from:to], plane[from:to])
 
+	// only pcm and lossless blocks opt out of the filter, most streams have none
+	masked := slices.Contains(d.noFilter, true)
+
 	d.overRows(len(d.sao), func(c0, c1 int) {
 		for ctb := c0; ctb < c1; ctb++ {
 			if !d.saoEnabled(ctb, cIdx) {
@@ -251,15 +256,19 @@ func saoPlane[P pixel](d *ctuDecoder, plane []P, stride, cIdx int, src []P) {
 				}
 
 				for x := ilo; x < ihi; {
-					if d.noFilter[d.tbIndex(x*sw, y*sh)] {
-						x = next(x)
+					run := ihi
 
-						continue
-					}
+					if masked {
+						if d.noFilter[d.tbIndex(x*sw, y*sh)] {
+							x = next(x)
 
-					run := x
-					for run < ihi && !d.noFilter[d.tbIndex(run*sw, y*sh)] {
-						run = next(run)
+							continue
+						}
+
+						run = x
+						for run < ihi && !d.noFilter[d.tbIndex(run*sw, y*sh)] {
+							run = next(run)
+						}
 					}
 
 					o := &p.offset

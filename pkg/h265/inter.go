@@ -295,7 +295,6 @@ func (d *ctuDecoder) predictionUnit(x, y, w, h, partIdx, partMode, depth, nCbS, 
 			if n < 2 {
 				if t, ok := d.temporalMV(x, y, w, h, l, lists[l][ref], d.refLong[l][ref]); ok {
 					cand[n] = t
-					n++
 				}
 			}
 

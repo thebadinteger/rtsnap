@@ -24,39 +24,43 @@ func I16x16CBPChroma(mbType int) int {
 	return ((mbType - 1) / 4) % 3
 }
 
+// coefficient levels of the macroblock being decoded
+type MBCoeffs struct {
+	Intra16x16DCLevel [16]int32
+	Intra16x16ACLevel [16][15]int32
+	LumaLevel4x4      [16][16]int32
+	LumaLevel8x8      [4][64]int32
+	ChromaDCLevel     [2][4]int32
+	ChromaACLevel     [2][4][15]int32
+}
+
+// per macroblock state kept for neighbour derivation and deblocking
 type MBData struct {
 	MBType              int
 	TransformSize8x8    bool
 	IntraPredMode16x16  int
-	Intra4x4PredMode    [16]int
-	Intra8x8PredMode    [4]int
+	Intra4x4PredMode    [16]int8
+	Intra8x8PredMode    [4]int8
 	IntraChromaPredMode int
 	CBPLuma             int
 	CBPChroma           int
 	QPY                 int
 	QPDelta             int
-	Intra16x16DCLevel   [16]int32
-	Intra16x16ACLevel   [16][15]int32
-	LumaLevel4x4        [16][16]int32
-	LumaLevel8x8        [4][64]int32
-	ChromaDCLevel       [2][4]int32
-	ChromaACLevel       [2][4][15]int32
 
 	CodedBlockFlag [6][16]uint8
 
-	NzCoeffLuma   [16]int
-	NzCoeffChroma [8]int
-	TotalCoeff    [24]int
+	NzCoeffLuma   [16]uint8
+	NzCoeffChroma [8]uint8
 
 	SliceStart   int
 	DeblockIDC   uint32
 	DeblockAlpha int
 	DeblockBeta  int
 
-	IsPCM   bool
-	PCMLuma [256]uint8
-	PCMCb   [256]uint8
-	PCMCr   [256]uint8
+	IsPCM bool
+
+	// levels, only set while the macroblock is decoded and reconstructed
+	*MBCoeffs
 }
 
 type SliceContext struct {
@@ -76,6 +80,8 @@ type SliceContext struct {
 	BitDepthY            int
 	BitDepthC            int
 	ChromaQpIndexOffset  int
+	// cr offset, second_chroma_qp_index_offset
+	SecondChromaQpIndexOffset int
 
 	PrevMBQPDeltaNonZero bool
 	SliceStartMB         int
@@ -84,6 +90,12 @@ type SliceContext struct {
 	DeblockBeta          int
 
 	TraceMBCMP bool
+
+	// picture being reconstructed and its scaling matrices
+	frame *Frame
+	sm    ScalingMatrices
+	// levels of the current macroblock
+	coeffs MBCoeffs
 
 	coeffBuf   [64]int32
 	sigFlags   [64]bool

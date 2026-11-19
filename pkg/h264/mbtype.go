@@ -265,13 +265,13 @@ func derivePredIntra4x4PredMode(sc *SliceContext, mbIdx, blkIdx int) int {
 
 	if bx > 0 {
 		leftIdx := rasterToZScan[by*4+(bx-1)]
-		predModeA = sc.MBs[mbIdx].Intra4x4PredMode[leftIdx]
+		predModeA = int(sc.MBs[mbIdx].Intra4x4PredMode[leftIdx])
 	} else if mbA := sc.MBAvailA(mbIdx); mbA != nil {
 		if mbA.MBType == MBTypeINxN && mbA.TransformSize8x8 {
-			predModeA = mbA.Intra8x8PredMode[(by/2)*2+1]
+			predModeA = int(mbA.Intra8x8PredMode[(by/2)*2+1])
 		} else if mbA.MBType == MBTypeINxN {
 			rightIdx := rasterToZScan[by*4+3]
-			predModeA = mbA.Intra4x4PredMode[rightIdx]
+			predModeA = int(mbA.Intra4x4PredMode[rightIdx])
 		} else {
 			predModeA = 2
 		}
@@ -279,13 +279,13 @@ func derivePredIntra4x4PredMode(sc *SliceContext, mbIdx, blkIdx int) int {
 
 	if by > 0 {
 		topIdx := rasterToZScan[(by-1)*4+bx]
-		predModeB = sc.MBs[mbIdx].Intra4x4PredMode[topIdx]
+		predModeB = int(sc.MBs[mbIdx].Intra4x4PredMode[topIdx])
 	} else if mbB := sc.MBAvailB(mbIdx); mbB != nil {
 		if mbB.MBType == MBTypeINxN && mbB.TransformSize8x8 {
-			predModeB = mbB.Intra8x8PredMode[2+bx/2]
+			predModeB = int(mbB.Intra8x8PredMode[2+bx/2])
 		} else if mbB.MBType == MBTypeINxN {
 			botIdx := rasterToZScan[3*4+bx]
-			predModeB = mbB.Intra4x4PredMode[botIdx]
+			predModeB = int(mbB.Intra4x4PredMode[botIdx])
 		} else {
 			predModeB = 2
 		}
@@ -308,26 +308,26 @@ func derivePredIntra8x8PredMode(sc *SliceContext, mbIdx, blk8x8Idx int) int {
 	y := blk8x8Idx / 2
 
 	if x > 0 {
-		predModeA = sc.MBs[mbIdx].Intra8x8PredMode[blk8x8Idx-1]
+		predModeA = int(sc.MBs[mbIdx].Intra8x8PredMode[blk8x8Idx-1])
 	} else if mbA := sc.MBAvailA(mbIdx); mbA != nil {
 		if mbA.MBType == MBTypeINxN && mbA.TransformSize8x8 {
-			predModeA = mbA.Intra8x8PredMode[y*2+1]
+			predModeA = int(mbA.Intra8x8PredMode[y*2+1])
 		} else if mbA.MBType == MBTypeINxN {
 			rightIdx := rasterToZScan[2*y*4+3]
-			predModeA = mbA.Intra4x4PredMode[rightIdx]
+			predModeA = int(mbA.Intra4x4PredMode[rightIdx])
 		} else {
 			predModeA = 2
 		}
 	}
 
 	if y > 0 {
-		predModeB = sc.MBs[mbIdx].Intra8x8PredMode[blk8x8Idx-2]
+		predModeB = int(sc.MBs[mbIdx].Intra8x8PredMode[blk8x8Idx-2])
 	} else if mbB := sc.MBAvailB(mbIdx); mbB != nil {
 		if mbB.MBType == MBTypeINxN && mbB.TransformSize8x8 {
-			predModeB = mbB.Intra8x8PredMode[2+x]
+			predModeB = int(mbB.Intra8x8PredMode[2+x])
 		} else if mbB.MBType == MBTypeINxN {
 			botIdx := rasterToZScan[3*4+2*x]
-			predModeB = mbB.Intra4x4PredMode[botIdx]
+			predModeB = int(mbB.Intra4x4PredMode[botIdx])
 		} else {
 			predModeB = 2
 		}

@@ -106,6 +106,12 @@ type sdpSection struct {
 
 // extract video tracks from sdp
 func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
+	tracks, _, err := parseSDP(sdp, baseURL)
+	return tracks, err
+}
+
+// extract video tracks and the aggregate control url of the session
+func parseSDP(sdp []byte, baseURL string) ([]*MediaTrack, string, error) {
 	lines := splitSDPLines(sdp)
 	var sections []sdpSection
 	var curSection *sdpSection
@@ -168,10 +174,10 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 					curSection.rtpmap[uint8(pt)] = fields[1]
 				}
 			case "fmtp":
-				fields := strings.SplitN(attrVal, " ", 2)
-				if len(fields) == 2 {
-					pt, _ := strconv.Atoi(fields[0])
-					curSection.fmtp[uint8(pt)] = parseFmtp(fields[1])
+				attrVal = strings.TrimSpace(attrVal)
+				if sp := strings.IndexAny(attrVal, " \t"); sp > 0 {
+					pt, _ := strconv.Atoi(attrVal[:sp])
+					curSection.fmtp[uint8(pt)] = parseFmtp(attrVal[sp+1:])
 				}
 			}
 		}
@@ -275,10 +281,10 @@ func ParseSDP(sdp []byte, baseURL string) ([]*MediaTrack, error) {
 	}
 
 	if len(tracks) == 0 {
-		return nil, ErrNoMedia
+		return nil, "", ErrNoMedia
 	}
 
-	return tracks, nil
+	return tracks, base, nil
 }
 
 // pick best matching track

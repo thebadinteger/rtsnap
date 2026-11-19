@@ -31,6 +31,7 @@ func TestDecodeSliceCABACPCMTerminate(t *testing.T) {
 		ChromaArrayType: 1,
 		BitDepthY:       8,
 		BitDepthC:       8,
+		frame:           NewFrame(32, 16),
 	}
 	sc.MBs[0].SliceStart = 0
 	sc.MBs[1].SliceStart = 0
@@ -47,8 +48,8 @@ func TestDecodeSliceCABACPCMTerminate(t *testing.T) {
 		t.Fatalf("both macroblocks must be pcm: %v %v", sc.MBs[0].IsPCM, sc.MBs[1].IsPCM)
 	}
 
-	if sc.MBs[0].PCMLuma[0] != 1 || sc.MBs[1].PCMLuma[0] != 2 {
-		t.Errorf("pcm samples wrong: %d %d", sc.MBs[0].PCMLuma[0], sc.MBs[1].PCMLuma[0])
+	if got0, got1 := sc.frame.GetLumaPixel(0, 0), sc.frame.GetLumaPixel(16, 0); got0 != 1 || got1 != 2 {
+		t.Errorf("pcm samples wrong: %d %d", got0, got1)
 	}
 
 	// pcm must not disturb the running qp or the dquant context

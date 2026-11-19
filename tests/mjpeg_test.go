@@ -230,7 +230,6 @@ func TestMJPEGTranscode(t *testing.T) {
 
 func TestMJPEGRawCameraSimulation(t *testing.T) {
 	// simulate real camera: just raw scan data without dht markers
-	// the rtp mjpeg depacketizer reconstructs full jpeg with headers
 	const w, h = 16, 16
 	src := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
@@ -256,8 +255,7 @@ func TestMJPEGRawCameraSimulation(t *testing.T) {
 	}
 	rawScan := data[scanStart:scanEnd]
 
-	// build rtp mjpeg packet with q < 128 so depacketizer generates
-	// standard quantization tables from scratch
+	// build rtp mjpeg packet with q < 128 so depacketizer generates standard quantization tables from scratch
 	hdr := []byte{
 		0x80, 0x9A, // version + marker + PT=26
 		0x00, 0x01, // seq
@@ -267,8 +265,8 @@ func TestMJPEGRawCameraSimulation(t *testing.T) {
 	jpegHdr := []byte{
 		0x00,             // type specific
 		0x00, 0x00, 0x00, // fragment offset = 0
-		0x01,             // jpeg type 1 (YUV 4:2:0)
-		75,               // Q factor < 128 = standard tables
+		0x01, // jpeg type 1 (YUV 4:2:0)
+		75,   // Q factor < 128 = standard tables
 		byte(w / 8),
 		byte(h / 8),
 	}

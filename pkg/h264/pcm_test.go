@@ -128,8 +128,6 @@ func TestDecodeIDRPCMCAVLC(t *testing.T) {
 	}
 }
 
-// idr with a pcm macroblock followed by a regular i16x16 macroblock, this
-// catches a broken stream position after pcm
 func pcmThenIntraIDR() []byte {
 	w := &spsBitWriter{}
 	w.ue(0) // first mb
@@ -161,7 +159,8 @@ func pcmThenIntraIDR() []byte {
 	w.ue(3) // mb type, intra 16x16 with cbp 0
 	w.ue(0) // chroma pred mode dc
 	w.ue(0) // mb qp delta
-	w.bit(1)
+	// left neighbour is pcm so nC is 16 and coeff_token is the 6 bit code 000011
+	w.u(3, 6)
 
 	w.bit(1)
 	for w.nbit != 0 {
@@ -201,10 +200,12 @@ func TestDecodeIDRPCMThenIntra(t *testing.T) {
 
 func TestDecodeIPCMCABAC(t *testing.T) {
 	sc := &SliceContext{
+		MBWidth:         1,
 		ChromaArrayType: 1,
 		BitDepthY:       8,
 		BitDepthC:       8,
 		MBs:             make([]MBData, 1),
+		frame:           NewFrame(16, 16),
 	}
 
 	data := make([]byte, 0, 2+384+2)
@@ -234,11 +235,11 @@ func TestDecodeIPCMCABAC(t *testing.T) {
 	if mb.QPY != 0 {
 		t.Errorf("qpy %d, want 0", mb.QPY)
 	}
-	if mb.PCMLuma[0] != 1 || mb.PCMLuma[254] != 255 {
+	if sc.frame.GetLumaPixel(0, 0) != 1 || sc.frame.GetLumaPixel(14, 15) != 255 {
 		t.Error("luma samples wrong")
 	}
-	if mb.PCMCb[63] != 137 {
-		t.Errorf("cb sample %d, want 137", mb.PCMCb[63])
+	if got := sc.frame.GetChromaPixel(0, 7, 7); got != 137 {
+		t.Errorf("cb sample %d, want 137", got)
 	}
 
 	// engine must be reinitialized after the pcm bytes

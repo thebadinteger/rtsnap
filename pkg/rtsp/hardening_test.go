@@ -532,12 +532,12 @@ func TestReadUDPSourceCheck(t *testing.T) {
 		udpRTP:   conn,
 		udpRTPIP: net.IPv4(127, 0, 0, 1),
 	}
-	frame, err := client.readUDP(context.Background())
+	payload, err := client.readUDP(context.Background())
 	if err != nil {
 		t.Fatalf("read udp: %v", err)
 	}
-	if string(frame.Payload) != "good" {
-		t.Fatalf("accepted spoofed packet: %q", frame.Payload)
+	if string(payload) != "good" {
+		t.Fatalf("accepted spoofed packet: %q", payload)
 	}
 }
 

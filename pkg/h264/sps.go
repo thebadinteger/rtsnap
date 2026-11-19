@@ -1,7 +1,6 @@
 package h264
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 )
@@ -43,6 +42,10 @@ type SPS struct {
 	FrameCropBottomOffset           uint
 	Width                           uint
 	Height                          uint
+	PicWidthInMbs                   uint
+	FrameHeightInMbs                uint
+	CropLeft                        uint
+	CropTop                         uint
 	NrBytesBeforeVUI                int
 	NrBytesRead                     int
 	VUI                             *VUIParameters
@@ -106,8 +109,7 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 
 	sps := &SPS{}
 
-	rd := bytes.NewReader(data)
-	reader := NewEBSPReader(rd)
+	reader := NewEBSPReader(data)
 
 	nalHdr := reader.Read(8)
 	nalType := GetNaluType(byte(nalHdr))
@@ -127,12 +129,19 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 
 	switch sps.Profile {
 	case 100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135:
-		sps.ChromaFormatIDC = byte(reader.ReadExpGolomb())
+		chromaFormatIDC := reader.ReadExpGolomb()
+		if chromaFormatIDC > 3 {
+			return nil, fmt.Errorf("invalid chroma_format_idc: %d", chromaFormatIDC)
+		}
+		sps.ChromaFormatIDC = byte(chromaFormatIDC)
 		if sps.ChromaFormatIDC == 3 {
 			sps.SeparateColourPlaneFlag = reader.ReadFlag()
 		}
 		sps.BitDepthLumaMinus8 = reader.ReadExpGolomb()
 		sps.BitDepthChromaMinus8 = reader.ReadExpGolomb()
+		if sps.BitDepthLumaMinus8 > 6 || sps.BitDepthChromaMinus8 > 6 {
+			return nil, fmt.Errorf("invalid bit depth: %d/%d", sps.BitDepthLumaMinus8+8, sps.BitDepthChromaMinus8+8)
+		}
 		sps.QPPrimeYZeroTransformBypassFlag = reader.ReadFlag()
 		sps.SeqScalingMatrixPresentFlag = reader.ReadFlag()
 		if sps.SeqScalingMatrixPresentFlag {
@@ -160,9 +169,15 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 
 	sps.Log2MaxFrameNumMinus4 = reader.ReadExpGolomb()
 	sps.PicOrderCntType = reader.ReadExpGolomb()
+	if sps.Log2MaxFrameNumMinus4 > 12 || sps.PicOrderCntType > 2 {
+		return nil, fmt.Errorf("invalid log2_max_frame_num_minus4 %d or pic_order_cnt_type %d", sps.Log2MaxFrameNumMinus4, sps.PicOrderCntType)
+	}
 	switch sps.PicOrderCntType {
 	case 0:
 		sps.Log2MaxPicOrderCntLsbMinus4 = reader.ReadExpGolomb()
+		if sps.Log2MaxPicOrderCntLsbMinus4 > 12 {
+			return nil, fmt.Errorf("invalid log2_max_pic_order_cnt_lsb_minus4: %d", sps.Log2MaxPicOrderCntLsbMinus4)
+		}
 	case 1:
 		sps.DeltaPicOrderAlwaysZeroFlag = reader.ReadFlag()
 		sps.OffsetForNonRefPic = reader.ReadExpGolomb()
@@ -183,6 +198,10 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 	picWidthInMbsUnitsMinus1 := reader.ReadExpGolomb()
 	picHeightInMbsUnitsMinus1 := reader.ReadExpGolomb()
 
+	if picWidthInMbsUnitsMinus1 >= 1024 || picHeightInMbsUnitsMinus1 >= 1024 {
+		return nil, fmt.Errorf("invalid picture size %dx%d macroblocks", picWidthInMbsUnitsMinus1+1, picHeightInMbsUnitsMinus1+1)
+	}
+
 	sps.Width = (picWidthInMbsUnitsMinus1 + 1) * 16
 	sps.Height = (picHeightInMbsUnitsMinus1 + 1) * 16
 
@@ -199,6 +218,8 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 	} else {
 		sps.Height *= 2
 	}
+	sps.PicWidthInMbs = sps.Width / 16
+	sps.FrameHeightInMbs = sps.Height / 16
 	if sps.FrameCroppingFlag {
 		switch sps.ChromaFormatIDC {
 		case 0:
@@ -218,16 +239,16 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 		sps.FrameCropTopOffset = reader.ReadExpGolomb()
 		sps.FrameCropBottomOffset = reader.ReadExpGolomb()
 
-		frameCropWidth := sps.FrameCropLeftOffset + sps.FrameCropRightOffset
-		frameCropHeight := sps.FrameCropTopOffset + sps.FrameCropBottomOffset
-
-		cropW := frameCropWidth * cropUnitX
-		cropH := frameCropHeight * cropUnitY
-		if cropW > sps.Width || cropH > sps.Height {
-			return nil, fmt.Errorf("crop %dx%d exceeds frame %dx%d", cropW, cropH, sps.Width, sps.Height)
+		maxCropX := sps.Width / cropUnitX
+		maxCropY := sps.Height / cropUnitY
+		if sps.FrameCropLeftOffset >= maxCropX || sps.FrameCropRightOffset >= maxCropX-sps.FrameCropLeftOffset ||
+			sps.FrameCropTopOffset >= maxCropY || sps.FrameCropBottomOffset >= maxCropY-sps.FrameCropTopOffset {
+			return nil, fmt.Errorf("frame cropping exceeds the %dx%d picture", sps.Width, sps.Height)
 		}
-		sps.Width -= cropW
-		sps.Height -= cropH
+		sps.CropLeft = sps.FrameCropLeftOffset * cropUnitX
+		sps.CropTop = sps.FrameCropTopOffset * cropUnitY
+		sps.Width -= (sps.FrameCropLeftOffset + sps.FrameCropRightOffset) * cropUnitX
+		sps.Height -= (sps.FrameCropTopOffset + sps.FrameCropBottomOffset) * cropUnitY
 	}
 
 	if sps.Width == 0 || sps.Height == 0 || sps.Width > 16384 || sps.Height > 16384 {
@@ -235,13 +256,20 @@ func ParseSPSNALUnit(data []byte, parseVUIBeyondAspectRatio bool) (*SPS, error) 
 	}
 
 	vuiParametersPresentFlag := reader.ReadFlag()
+	if err := reader.AccError(); err != nil {
+		return nil, err
+	}
 	sps.NrBytesBeforeVUI = reader.NrBytesRead()
 	if vuiParametersPresentFlag {
+		// cameras ship truncated or malformed vui, nothing in it is needed to decode
 		sps.VUI = parseVUI(reader, parseVUIBeyondAspectRatio)
+		if reader.AccError() != nil {
+			sps.VUI = nil
+		}
 	}
 	sps.NrBytesRead = reader.NrBytesRead()
 
-	return sps, reader.AccError()
+	return sps, nil
 }
 
 func (s *SPS) CpbDpbDelaysPresent() bool {
@@ -268,7 +296,6 @@ func (s *SPS) ChromaArrayType() byte {
 
 func parseVUI(reader *EBSPReader, parseVUIBeyondAspectRatio bool) *VUIParameters {
 	vui := &VUIParameters{}
-	var err error
 	aspectRatioInfoPresentFlag := reader.ReadFlag()
 	if aspectRatioInfoPresentFlag {
 		aspectRatioIDC := reader.Read(8)
@@ -276,10 +303,8 @@ func parseVUI(reader *EBSPReader, parseVUIBeyondAspectRatio bool) *VUIParameters
 			vui.SampleAspectRatioWidth = reader.Read(16)
 			vui.SampleAspectRatioHeight = reader.Read(16)
 		} else {
-			vui.SampleAspectRatioWidth, vui.SampleAspectRatioHeight, err = GetSARfromIDC(aspectRatioIDC)
-			if err != nil {
-				reader.SetError(fmt.Errorf("GetSARFromIDC: %w", err))
-			}
+			// reserved aspect_ratio_idc values are ignored
+			vui.SampleAspectRatioWidth, vui.SampleAspectRatioHeight, _ = GetSARfromIDC(aspectRatioIDC)
 		}
 	}
 	if !parseVUIBeyondAspectRatio {
@@ -340,6 +365,10 @@ func parseVUI(reader *EBSPReader, parseVUIBeyondAspectRatio bool) *VUIParameters
 func parseHrdParameters(r *EBSPReader) *HrdParameters {
 	hp := &HrdParameters{}
 	hp.CpbCountMinus1 = r.ReadExpGolomb()
+	if hp.CpbCountMinus1 > 31 {
+		r.SetError(fmt.Errorf("invalid cpb_cnt_minus1: %d", hp.CpbCountMinus1))
+		return hp
+	}
 
 	hp.BitRateScale = r.Read(4)
 	hp.CpbSizeScale = r.Read(4)
@@ -383,7 +412,15 @@ func readScalingList(reader *EBSPReader, sizeOfScalingList int) ScalingList {
 	for j := 0; j < sizeOfScalingList; j++ {
 		if nextScale != 0 {
 			deltaScale := reader.ReadSignedGolomb()
+			if deltaScale < -128 || deltaScale > 127 {
+				reader.SetError(fmt.Errorf("delta_scale %d out of range", deltaScale))
+				return nil
+			}
 			nextScale = (lastScale + deltaScale + 256) % 256
+			// useDefaultScalingMatrixFlag, an empty non nil list selects the default list
+			if j == 0 && nextScale == 0 {
+				return ScalingList{}
+			}
 		}
 		if nextScale == 0 {
 			scalingList[j] = lastScale

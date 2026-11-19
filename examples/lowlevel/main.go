@@ -36,7 +36,7 @@ func main() {
 	if err := client.Play(ctx); err != nil {
 		panic(err)
 	}
-	defer client.Teardown(ctx)
+	defer func() { _ = client.Teardown(ctx) }()
 
 	// read the next packet carrying rtp, skipping interleaved rtcp
 	frame, err := client.ReadRTPFrame(ctx)

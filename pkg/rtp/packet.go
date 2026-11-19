@@ -1,6 +1,7 @@
 package rtp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 )
@@ -16,10 +17,13 @@ type Packet struct {
 	SequenceNumber uint16
 	Timestamp      uint32
 	SSRC           uint32
-	Payload        []byte
+	// header extension, both empty when the packet carries none
+	ExtensionProfile uint16
+	ExtensionPayload []byte
+	Payload          []byte
 }
 
-// parse raw bytes into rtp packet
+// parse raw bytes into rtp packet, the packet aliases data
 func (p *Packet) Unmarshal(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("rtp packet too short: %d bytes", len(data))
@@ -46,15 +50,18 @@ func (p *Packet) Unmarshal(data []byte) error {
 		return fmt.Errorf("rtp packet truncated reading csrc")
 	}
 
+	p.ExtensionProfile, p.ExtensionPayload = 0, nil
 	if p.Extension {
 		if len(data) < offset+4 {
 			return fmt.Errorf("rtp packet truncated reading extension")
 		}
 		extLen := int(binary.BigEndian.Uint16(data[offset+2:offset+4])) * 4
-		offset += 4 + extLen
-		if len(data) < offset {
+		if len(data) < offset+4+extLen {
 			return fmt.Errorf("rtp packet truncated reading extension data")
 		}
+		p.ExtensionProfile = binary.BigEndian.Uint16(data[offset : offset+2])
+		p.ExtensionPayload = data[offset+4 : offset+4+extLen]
+		offset += 4 + extLen
 	}
 
 	payload := data[offset:]
@@ -68,4 +75,65 @@ func (p *Packet) Unmarshal(data []byte) error {
 
 	p.Payload = payload
 	return nil
+}
+
+// sequence continuity shared by the depacketizers
+type seqState struct {
+	last uint16
+	set  bool
+}
+
+// dup reports a repeated packet, gap a break since the previous one
+func (s *seqState) next(seq uint16) (dup, gap bool) {
+	if s.set && seq == s.last {
+		return true, false
+	}
+	gap = s.set && seq != s.last+1
+	s.last, s.set = seq, true
+	return false, gap
+}
+
+func appendFragment(buf, data []byte) []byte {
+	if need := len(buf) + len(data); need > cap(buf) {
+		grown := make([]byte, len(buf), max(need, 2*cap(buf), 4096))
+		copy(grown, buf)
+		buf = grown
+	}
+	return append(buf, data...)
+}
+
+var startCode = []byte{0, 0, 1}
+
+// append the start code separated units of b to out, b itself when it has none
+func splitAnnexB(out [][]byte, b []byte) [][]byte {
+	for len(b) > 0 {
+		i := bytes.Index(b, startCode)
+		if i < 0 {
+			return append(out, b)
+		}
+		end := i
+		for end > 0 && b[end-1] == 0 {
+			end--
+		}
+		if end > 0 {
+			out = append(out, b[:end:end])
+		}
+		b = b[i+3:]
+	}
+	return out
+}
+
+// read the size prefixed units of an aggregation packet
+func splitAggregate(buf []byte) [][]byte {
+	var nalus [][]byte
+	for len(buf) > 2 {
+		size := int(binary.BigEndian.Uint16(buf))
+		buf = buf[2:]
+		if size == 0 || size > len(buf) {
+			break
+		}
+		nalus = append(nalus, append([]byte(nil), buf[:size]...))
+		buf = buf[size:]
+	}
+	return nalus
 }

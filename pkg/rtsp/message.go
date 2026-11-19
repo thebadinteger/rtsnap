@@ -3,8 +3,10 @@ package rtsp
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -15,7 +17,11 @@ const (
 	maxResponseBody = 16 << 20 // 16mb cap on response body
 	maxHeaderLines  = 128
 	maxHeaderLine   = 8 << 10 // single line cap
+	maxFrameSize    = 4 + 0xffff
 )
+
+// a server request arrived where a response was expected
+var errServerRequest = errors.New("rtsp request from server")
 
 type Request struct {
 	Method  string
@@ -26,19 +32,40 @@ type Request struct {
 
 // serialize request to bytes
 func (r *Request) Bytes() []byte {
-	var b bytes.Buffer
-	b.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Method, r.URI, rtspProto))
-	for k, v := range r.Headers {
-		b.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+	b := make([]byte, 0, 256+len(r.Body))
+	b = append(b, r.Method...)
+	b = append(b, ' ')
+	b = append(b, r.URI...)
+	b = append(b, ' ')
+	b = append(b, rtspProto...)
+	b = append(b, '\r', '\n')
+
+	// cseq goes first, some embedded servers only look at the leading headers
+	if v, ok := r.Headers["CSeq"]; ok {
+		b = appendHeader(b, "CSeq", v)
+	}
+	keys := make([]string, 0, len(r.Headers))
+	for k := range r.Headers {
+		if k != "CSeq" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		b = appendHeader(b, k, r.Headers[k])
 	}
 	if len(r.Body) > 0 {
-		b.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(r.Body)))
+		b = appendHeader(b, "Content-Length", strconv.Itoa(len(r.Body)))
 	}
-	b.WriteString("\r\n")
-	if len(r.Body) > 0 {
-		b.Write(r.Body)
-	}
-	return b.Bytes()
+	b = append(b, '\r', '\n')
+	return append(b, r.Body...)
+}
+
+func appendHeader(b []byte, key, value string) []byte {
+	b = append(b, key...)
+	b = append(b, ':', ' ')
+	b = append(b, value...)
+	return append(b, '\r', '\n')
 }
 
 // serialize request to wire
@@ -68,6 +95,9 @@ func (r *Response) Header(key string) string {
 
 // every value of a header
 func (r *Response) Values(key string) []string {
+	if v, ok := r.HeaderValues[key]; ok {
+		return v
+	}
 	for k, v := range r.HeaderValues {
 		if strings.EqualFold(k, key) {
 			return v
@@ -83,13 +113,15 @@ func (r *Response) Values(key string) []string {
 
 // add header value preserving duplicates and original case
 func addHeaderValue(values map[string][]string, key, value string) {
-	for k := range values {
-		if strings.EqualFold(k, key) {
-			values[k] = append(values[k], value)
-			return
+	if _, ok := values[key]; !ok {
+		for k := range values {
+			if strings.EqualFold(k, key) {
+				key = k
+				break
+			}
 		}
 	}
-	values[key] = []string{value}
+	values[key] = append(values[key], value)
 }
 
 // read one crlf line with a hard size cap
@@ -107,7 +139,7 @@ func readLine(br *bufio.Reader) (string, error) {
 	return string(line), nil
 }
 
-// parse status line and headers
+// parse status line, headers and body
 func readResponse(br *bufio.Reader) (*Response, string, error) {
 	var raw strings.Builder
 	line, err := readLine(br)
@@ -116,20 +148,27 @@ func readResponse(br *bufio.Reader) (*Response, string, error) {
 	}
 	raw.WriteString(line)
 	line = strings.TrimRight(line, "\r\n")
-	parts := strings.SplitN(line, " ", 3)
-	if len(parts) < 2 {
-		return nil, "", fmt.Errorf("malformed status line: %s", line)
-	}
-	if !strings.HasPrefix(parts[0], "RTSP/") {
-		return nil, "", fmt.Errorf("not an rtsp response: %s", line)
-	}
-	code, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return nil, "", fmt.Errorf("invalid status code: %s", parts[1])
-	}
+
+	// a request pushed by the server is consumed whole and reported
+	request := !strings.HasPrefix(line, "RTSP/") && strings.HasSuffix(line, " "+rtspProto)
+
+	code := 0
 	msg := ""
-	if len(parts) == 3 {
-		msg = parts[2]
+	if !request {
+		parts := strings.SplitN(line, " ", 3)
+		if len(parts) < 2 {
+			return nil, "", fmt.Errorf("malformed status line: %q", line)
+		}
+		if !strings.HasPrefix(parts[0], "RTSP/") {
+			return nil, "", fmt.Errorf("not an rtsp response: %q", line)
+		}
+		code, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid status code: %s", parts[1])
+		}
+		if len(parts) == 3 {
+			msg = parts[2]
+		}
 	}
 
 	values := make(map[string][]string)
@@ -192,6 +231,9 @@ func readResponse(br *bufio.Reader) (*Response, string, error) {
 		}
 	}
 
+	if request {
+		return nil, raw.String(), errServerRequest
+	}
 	return res, raw.String(), nil
 }
 
@@ -200,24 +242,64 @@ type Frame struct {
 	Payload []byte
 }
 
-// parse interleaved dollar frame
-func readFrame(br *bufio.Reader) (*Frame, error) {
-	var hdr [4]byte
-	_, err := io.ReadFull(br, hdr[:])
+// peek one interleaved frame, the payload stays valid until the next read
+func peekFrame(br *bufio.Reader) (channel int, payload []byte, size int, err error) {
+	hdr, err := br.Peek(4)
 	if err != nil {
-		return nil, err
+		return 0, nil, 0, err
 	}
 	if hdr[0] != magicByte {
-		return nil, fmt.Errorf("invalid interleaved frame magic: 0x%02x", hdr[0])
+		return 0, nil, 0, fmt.Errorf("invalid interleaved frame magic: 0x%02x", hdr[0])
 	}
-	length := int(uint16(hdr[2])<<8 | uint16(hdr[3]))
-	payload := make([]byte, length)
-	_, err = io.ReadFull(br, payload)
+	channel = int(hdr[1])
+	size = 4 + (int(hdr[2])<<8 | int(hdr[3]))
+	if size > br.Size() {
+		// reader smaller than a full frame, fall back to a copy
+		payload = make([]byte, size-4)
+		if _, err := br.Discard(4); err != nil {
+			return 0, nil, 0, err
+		}
+		if _, err := io.ReadFull(br, payload); err != nil {
+			return 0, nil, 0, err
+		}
+		return channel, payload, 0, nil
+	}
+	b, err := br.Peek(size)
 	if err != nil {
-		return nil, err
+		return 0, nil, 0, err
 	}
-	return &Frame{
-		Channel: int(hdr[1]),
-		Payload: payload,
-	}, nil
+	return channel, b[4:], size, nil
+}
+
+// drop bytes up to the next frame magic or rtsp message
+func resync(br *bufio.Reader) error {
+	for {
+		b, err := br.Peek(1)
+		if err != nil {
+			return err
+		}
+		if b[0] == magicByte {
+			return nil
+		}
+		if b[0] == 'R' {
+			head, err := br.Peek(5)
+			if err != nil {
+				return err
+			}
+			if string(head) == "RTSP/" {
+				return nil
+			}
+		}
+		buf, _ := br.Peek(br.Buffered())
+		n := len(buf)
+		if i := bytes.IndexByte(buf[1:], magicByte); i >= 0 {
+			n = i + 1
+		}
+		if i := bytes.IndexByte(buf[1:n], 'R'); i >= 0 {
+			n = i + 1
+		}
+		if _, err := br.Discard(n); err != nil {
+			return err
+		}
+	}
 }

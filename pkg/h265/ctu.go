@@ -133,6 +133,8 @@ type ctuDecoder struct {
 }
 
 type scanGeometry struct {
+	width        uint32
+	height       uint32
 	widthInCtbs  uint32
 	heightInCtbs uint32
 	ctbLog2SizeY uint8
@@ -143,6 +145,8 @@ type scanGeometry struct {
 
 func geometryOf(s *sps, p *pps) scanGeometry {
 	return scanGeometry{
+		width:        s.picWidthInLumaSamples,
+		height:       s.picHeightInLumaSamples,
 		widthInCtbs:  s.picWidthInCtbs,
 		heightInCtbs: s.picHeightInCtbs,
 		ctbLog2SizeY: s.ctbLog2SizeY,
@@ -153,7 +157,8 @@ func geometryOf(s *sps, p *pps) scanGeometry {
 }
 
 func (g scanGeometry) same(o scanGeometry) bool {
-	return g.widthInCtbs == o.widthInCtbs && g.heightInCtbs == o.heightInCtbs &&
+	return g.width == o.width && g.height == o.height &&
+		g.widthInCtbs == o.widthInCtbs && g.heightInCtbs == o.heightInCtbs &&
 		g.ctbLog2SizeY == o.ctbLog2SizeY && g.minTbLog2 == o.minTbLog2 &&
 		slices.Equal(g.cols, o.cols) && slices.Equal(g.rows, o.rows)
 }

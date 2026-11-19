@@ -1,6 +1,7 @@
 package rtp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 )
@@ -119,18 +120,21 @@ func makeQuantTables(q uint8) []quantTable {
 	return tables
 }
 
+// onvif header extension ids that carry jpeg marker segments
+const (
+	onvifJPEGFirst  = 0xFFD8
+	onvifReplay     = 0xABAC
+	onvifReplaySize = 12
+)
+
 type MJPEGDepacketizer struct {
-	fragments      [][]byte
-	fragmentsLen   int
-	width          int
-	height         int
-	jpegType       uint8
-	restartInt     uint16
-	quantTables    []quantTable
-	hasFirstPacket bool
-	lastSeq        uint16
-	hasSeq         bool
-	MaxBytes       int
+	// jpeg under construction, headers first and scan data after hdrLen
+	out         []byte
+	hdrLen      int
+	quantTables []quantTable
+	quantQ      uint8
+	seq         seqState
+	MaxBytes    int
 }
 
 func (d *MJPEGDepacketizer) maxBytes() int {
@@ -145,13 +149,27 @@ func NewMJPEGDepacketizer() *MJPEGDepacketizer {
 	return &MJPEGDepacketizer{}
 }
 
-// drop collected fragments and release their backing buffers
-func (d *MJPEGDepacketizer) dropFragments() {
-	for i := range d.fragments {
-		d.fragments[i] = nil
+// forget the frame under construction
+func (d *MJPEGDepacketizer) drop() {
+	d.out = d.out[:0]
+	d.hdrLen = 0
+}
+
+// jpeg marker segments of an onvif header extension, nil when the packet has none
+func onvifSegments(pkt *Packet) []byte {
+	ext := pkt.ExtensionPayload
+	if pkt.ExtensionProfile == onvifReplay && len(ext) >= onvifReplaySize+4 {
+		// the jpeg extension is appended to the replay extension
+		n := onvifReplaySize + 4 + (int(ext[onvifReplaySize+2])<<8|int(ext[onvifReplaySize+3]))*4
+		if ext[onvifReplaySize] == 0xFF && ext[onvifReplaySize+1] == 0xD8 && n <= len(ext) {
+			return ext[onvifReplaySize+4 : n]
+		}
+		return nil
 	}
-	d.fragments = d.fragments[:0]
-	d.fragmentsLen = 0
+	if pkt.ExtensionProfile == onvifJPEGFirst {
+		return ext
+	}
+	return nil
 }
 
 // reassemble jpeg frame from rtp packet
@@ -181,20 +199,13 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		buf = buf[4:]
 	}
 
-	if d.hasSeq && pkt.SequenceNumber == d.lastSeq {
+	dup, gap := d.seq.next(pkt.SequenceNumber)
+	if dup {
 		return nil, nil
 	}
-	gap := d.hasSeq && pkt.SequenceNumber-d.lastSeq != 1
-	d.lastSeq = pkt.SequenceNumber
-	d.hasSeq = true
 
 	if offset == 0 {
-		d.dropFragments()
-		d.width = w
-		d.height = h
-		d.jpegType = jpegType
-		d.restartInt = restartInterval
-		d.hasFirstPacket = true
+		d.drop()
 
 		if q >= 128 {
 			if len(buf) < 4 {
@@ -227,53 +238,87 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 				}
 
 				d.quantTables = tables
-			} else if d.quantTables == nil {
-				return nil, fmt.Errorf("mjpeg frame without quant tables")
 			}
-		} else {
-			d.quantTables = makeQuantTables(min(max(q, 1), 99))
+			d.quantQ = 0
+		} else if q = min(max(q, 1), 99); q != d.quantQ {
+			d.quantTables = makeQuantTables(q)
+			d.quantQ = q
 		}
 
 		if len(buf) > d.maxBytes() {
-			d.dropFragments()
-			d.hasFirstPacket = false
-
 			return nil, fmt.Errorf("mjpeg frame too large")
 		}
-
-		f := make([]byte, len(buf))
-		copy(f, buf)
-		d.fragments = append(d.fragments, f)
-		d.fragmentsLen = len(f)
+		if err := d.writeHeaders(onvifSegments(pkt), jpegType, w, h, restartInterval); err != nil {
+			d.drop()
+			return nil, err
+		}
 	} else {
-		if !d.hasFirstPacket || gap || offset != d.fragmentsLen {
-			d.dropFragments()
-			d.hasFirstPacket = false
-
+		if d.hdrLen == 0 || gap || offset != len(d.out)-d.hdrLen {
+			d.drop()
 			return nil, nil
 		}
-		if d.fragmentsLen+len(buf) > d.maxBytes() {
-			d.dropFragments()
-			d.hasFirstPacket = false
-
+		if offset+len(buf) > d.maxBytes() {
+			d.drop()
 			return nil, fmt.Errorf("mjpeg frame too large")
 		}
-		f := make([]byte, len(buf))
-		copy(f, buf)
-		d.fragments = append(d.fragments, f)
-		d.fragmentsLen += len(f)
 	}
+	d.out = appendFragment(d.out, buf)
 
 	if !pkt.Marker {
 		return nil, nil
 	}
 
-	var out []byte
+	// the caller owns the frame from here on
+	out, scan := d.out, d.hdrLen
+	d.out, d.hdrLen = nil, 0
 
-	out = append(out, 0xFF, 0xD8)
+	if i := bytes.Index(out[scan:], eoiMarker); i >= 0 {
+		return out[:scan+i+2], nil
+	}
+	return append(out, eoiMarker...), nil
+}
 
-	if len(d.quantTables) > 0 {
+var eoiMarker = []byte{0xFF, 0xD9}
+
+// start a frame with the jpeg headers, segments of an onvif extension win over derived ones
+func (d *MJPEGDepacketizer) writeHeaders(ext []byte, jpegType uint8, w, h int, restartInterval uint16) error {
+	out := append(d.out[:0], 0xFF, 0xD8)
+
+	var sos []byte
+	var haveDQT, haveSOF, haveDHT, haveDRI bool
+	for len(ext) >= 4 && ext[0] == 0xFF {
+		if ext[1] == 0xFF {
+			// fill byte padding
+			ext = ext[1:]
+			continue
+		}
+		n := 2 + (int(ext[2])<<8 | int(ext[3]))
+		if n < 4 || n > len(ext) {
+			break
+		}
+		switch ext[1] {
+		case 0xDA:
+			sos = ext[:n]
+		case 0xDB:
+			haveDQT = true
+		case 0xC0, 0xC1, 0xC2:
+			haveSOF = true
+		case 0xC4:
+			haveDHT = true
+		case 0xDD:
+			haveDRI = true
+		}
+		if ext[1] != 0xDA {
+			out = append(out, ext[:n]...)
+		}
+		ext = ext[n:]
+	}
+
+	if !haveDQT {
 		tables := d.quantTables
+		if len(tables) == 0 {
+			return fmt.Errorf("mjpeg frame without quant tables")
+		}
 		if len(tables) == 1 {
 			tables = []quantTable{tables[0], tables[0]}
 		}
@@ -294,65 +339,54 @@ func (d *MJPEGDepacketizer) Decode(pkt *Packet) ([]byte, error) {
 		}
 	}
 
-	out = append(out, 0xFF, 0xC0)
-	out = append(out, 0x00, 0x11)
-	out = append(out, 0x08)
-	out = append(out, byte(d.height>>8), byte(d.height))
-	out = append(out, byte(d.width>>8), byte(d.width))
-	out = append(out, 0x03)
-
-	// restart marker types 64-127 mirror the sampling of types 0-63
-	sampling := d.jpegType & 0x3f
-
-	subH, subV := byte(1), byte(1)
-	if sampling == 0 {
-		subH = 2
-	} else if sampling == 1 {
-		subH = 2
-		subV = 2
-	}
-	out = append(out, 0x01, (subH<<4)|subV, 0x00)
-	out = append(out, 0x02, 0x11, 0x01)
-	out = append(out, 0x03, 0x11, 0x01)
-
-	writeDHT := func(class, id byte, lens, symbols []byte) {
-		l := 2 + 1 + len(lens) + len(symbols)
-		out = append(out, 0xFF, 0xC4, byte(l>>8), byte(l))
-		out = append(out, (class<<4)|id)
-		out = append(out, lens...)
-		out = append(out, symbols...)
-	}
-	writeDHT(0, 0, lumDcCodeLens, lumDcSymbols)
-	writeDHT(1, 0, lumAcCodeLens, lumAcSymbols)
-	writeDHT(0, 1, chmDcCodeLens, chmDcSymbols)
-	writeDHT(1, 1, chmAcCodeLens, chmAcSymbols)
-
-	if d.restartInt > 0 {
-		out = append(out, 0xFF, 0xDD, 0x00, 0x04, byte(d.restartInt>>8), byte(d.restartInt))
-	}
-
-	out = append(out, 0xFF, 0xDA, 0x00, 0x0C, 0x03)
-	out = append(out, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11)
-	out = append(out, 0x00, 0x3F, 0x00)
-
-	for _, f := range d.fragments {
-		out = append(out, f...)
-	}
-
-	// scan data may be zero padded or carry trailing bytes after the eoi
-	for i := len(out) - 2; i >= 2; i-- {
-		if out[i] == 0xFF && out[i+1] == 0xD9 {
-			out = out[:i+2]
-
-			break
+	if !haveSOF {
+		// sizes beyond 2040 pixels do not fit the rtp header and need the extension
+		if w == 0 || h == 0 {
+			return fmt.Errorf("mjpeg frame without dimensions")
 		}
-	}
-	if len(out) < 2 || out[len(out)-2] != 0xFF || out[len(out)-1] != 0xD9 {
-		out = append(out, 0xFF, 0xD9)
+
+		// restart marker types 64-127 mirror the sampling of types 0-63
+		sampling := byte(0x11)
+		switch jpegType & 0x3f {
+		case 0:
+			sampling = 0x21
+		case 1:
+			sampling = 0x22
+		}
+		out = append(out, 0xFF, 0xC0, 0x00, 0x11, 0x08,
+			byte(h>>8), byte(h), byte(w>>8), byte(w), 0x03,
+			0x01, sampling, 0x00,
+			0x02, 0x11, 0x01,
+			0x03, 0x11, 0x01)
 	}
 
-	d.dropFragments()
-	d.hasFirstPacket = false
+	if !haveDHT {
+		out = appendDHT(out, 0x00, lumDcCodeLens, lumDcSymbols)
+		out = appendDHT(out, 0x10, lumAcCodeLens, lumAcSymbols)
+		out = appendDHT(out, 0x01, chmDcCodeLens, chmDcSymbols)
+		out = appendDHT(out, 0x11, chmAcCodeLens, chmAcSymbols)
+	}
 
-	return out, nil
+	if !haveDRI && restartInterval > 0 {
+		out = append(out, 0xFF, 0xDD, 0x00, 0x04, byte(restartInterval>>8), byte(restartInterval))
+	}
+
+	if sos != nil {
+		out = append(out, sos...)
+	} else {
+		out = append(out, 0xFF, 0xDA, 0x00, 0x0C, 0x03,
+			0x01, 0x00, 0x02, 0x11, 0x03, 0x11,
+			0x00, 0x3F, 0x00)
+	}
+
+	d.out = out
+	d.hdrLen = len(out)
+	return nil
+}
+
+func appendDHT(out []byte, classID byte, lens, symbols []byte) []byte {
+	l := 2 + 1 + len(lens) + len(symbols)
+	out = append(out, 0xFF, 0xC4, byte(l>>8), byte(l), classID)
+	out = append(out, lens...)
+	return append(out, symbols...)
 }

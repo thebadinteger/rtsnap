@@ -57,6 +57,9 @@ func (d *Decoder) Close() {
 	d.ctuPoolPut()
 }
 
+// true while a picture still waits for slices
+func (d *Decoder) Pending() bool { return d.cur != nil }
+
 // feed single nal unit into decoder
 func (d *Decoder) DecodeNAL(nal NALUnit) ([]*Picture, error) {
 	if d.sps == nil {
@@ -280,6 +283,16 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 		}
 
 		if sh.sliceType != sliceI {
+			// make room for the stand-ins of references the stream never delivered
+			for missing := d.missingRefs(&rps); len(d.dpb)+missing+1 > d.maxDecPicBuf; {
+				q := d.dpbBump()
+				if q == nil {
+					break
+				}
+
+				done = append(done, q)
+			}
+
 			d.generateUnavailable(&rps, s)
 		}
 
@@ -304,6 +317,7 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 	d.buildRefLists(sh)
 
 	if err := d.ctu.decodeSliceData(nal, sh); err != nil {
+		d.cur.Corrupt = true
 		return done, err
 	}
 
@@ -312,6 +326,21 @@ func (d *Decoder) decodeSlice(nal NALUnit) ([]*Picture, error) {
 	}
 
 	return done, nil
+}
+
+func (d *Decoder) missingRefs(rps *refPicSet) int {
+	n := 0
+
+	for _, l := range [][]int32{rps.stCurrBefore, rps.stCurrAfter, rps.ltCurr,
+		rps.stFoll, rps.ltFoll} {
+		for _, poc := range l {
+			if d.dpbFind(poc) == nil {
+				n++
+			}
+		}
+	}
+
+	return n
 }
 
 func (d *Decoder) ppsForSlice(nal NALUnit) (*pps, bool, error) {
@@ -447,7 +476,8 @@ func (d *ctuDecoder) decodeSliceData(nal NALUnit, sh *sliceHeader) error {
 		}
 	}
 
-	return nil
+	// the picture ran out before the segment signalled its end
+	return ErrInvalid
 }
 
 func (d *ctuDecoder) substreamStarts(nal NALUnit, sh *sliceHeader) []int {

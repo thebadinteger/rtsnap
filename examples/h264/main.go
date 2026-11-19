@@ -37,7 +37,7 @@ func main() {
 	if err := client.Play(ctx); err != nil {
 		panic(err)
 	}
-	defer client.Teardown(ctx)
+	defer func() { _ = client.Teardown(ctx) }()
 
 	depack := rtp.NewH264Depacketizer()
 	dec := h264.New()
@@ -50,17 +50,14 @@ func main() {
 		_, _ = dec.DecodeNALUs(client.Track.PPS)
 	}
 
+	var pkt rtp.Packet
 	for {
-		frame, err := client.ReadFrame(ctx)
+		// the packet is only valid until the next read, the depacketizer copies what it keeps
+		raw, err := client.ReadPacket(ctx)
 		if err != nil {
 			panic(err)
 		}
-		if frame.Channel != client.RTPChannel() {
-			continue
-		}
-
-		var pkt rtp.Packet
-		if err := pkt.Unmarshal(frame.Payload); err != nil {
+		if err := pkt.Unmarshal(raw); err != nil || pkt.PayloadType != client.Track.PayloadType {
 			continue
 		}
 

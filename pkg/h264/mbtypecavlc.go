@@ -77,16 +77,16 @@ func DeriveNC(sc *SliceContext, mbIdx int, blkIdx int, isChromaDC bool) int {
 
 	leftIdx := lumaLeftNeighbor[blkIdx]
 	if leftIdx >= 0 {
-		nA = sc.MBs[mbIdx].NzCoeffLuma[leftIdx]
+		nA = int(sc.MBs[mbIdx].NzCoeffLuma[leftIdx])
 	} else if mbA := sc.MBAvailA(mbIdx); mbA != nil {
-		nA = mbA.NzCoeffLuma[lumaLeftFromMBA[blkIdx]]
+		nA = int(mbA.NzCoeffLuma[lumaLeftFromMBA[blkIdx]])
 	}
 
 	topIdx := lumaTopNeighbor[blkIdx]
 	if topIdx >= 0 {
-		nB = sc.MBs[mbIdx].NzCoeffLuma[topIdx]
+		nB = int(sc.MBs[mbIdx].NzCoeffLuma[topIdx])
 	} else if mbB := sc.MBAvailB(mbIdx); mbB != nil {
-		nB = mbB.NzCoeffLuma[lumaTopFromMBB[blkIdx]]
+		nB = int(mbB.NzCoeffLuma[lumaTopFromMBB[blkIdx]])
 	}
 
 	if nA >= 0 && nB >= 0 {
@@ -111,15 +111,15 @@ func DeriveChromaNC(sc *SliceContext, mbIdx int, blkIdx int) int {
 	y := localIdx / 2
 
 	if x > 0 {
-		nA = sc.MBs[mbIdx].NzCoeffChroma[compBase+localIdx-1]
+		nA = int(sc.MBs[mbIdx].NzCoeffChroma[compBase+localIdx-1])
 	} else if mbA := sc.MBAvailA(mbIdx); mbA != nil {
-		nA = mbA.NzCoeffChroma[compBase+y*2+1]
+		nA = int(mbA.NzCoeffChroma[compBase+y*2+1])
 	}
 
 	if y > 0 {
-		nB = sc.MBs[mbIdx].NzCoeffChroma[compBase+localIdx-2]
+		nB = int(sc.MBs[mbIdx].NzCoeffChroma[compBase+localIdx-2])
 	} else if mbB := sc.MBAvailB(mbIdx); mbB != nil {
-		nB = mbB.NzCoeffChroma[compBase+2+x]
+		nB = int(mbB.NzCoeffChroma[compBase+2+x])
 	}
 
 	if nA >= 0 && nB >= 0 {

@@ -31,6 +31,10 @@ type mockServer struct {
 	noVideo bool
 	udp     bool
 	drop    map[int]bool
+	// negotiate udp but never send a datagram
+	udpSilent bool
+	// stream before answering play
+	earlyRTP bool
 
 	udpConn   net.PacketConn
 	udpTarget *net.UDPAddr
@@ -221,10 +225,10 @@ func (s *mockServer) handle(conn net.Conn) {
 		case "DESCRIBE":
 			var sdp string
 			switch s.codec {
-		case "h264":
-			sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\n"
-		case "h264sprop":
-			sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z2QAHqyyAWhf8uAiAAADAAIAAAMAZB4sXJA=,aOvMsiw=\r\na=control:track0\r\n"
+			case "h264":
+				sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\n"
+			case "h264sprop":
+				sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z2QAHqyyAWhf8uAiAAADAAIAAAMAZB4sXJA=,aOvMsiw=\r\na=control:track0\r\n"
 			case "h265":
 				sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Session\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H265/90000\r\na=control:track0\r\n"
 			case "mjpeg":
@@ -255,15 +259,19 @@ func (s *mockServer) handle(conn net.Conn) {
 					}
 				}
 			}
+			s.mu.Lock()
+			if s.udpConn != nil {
+				_ = s.udpConn.Close()
+			}
+			s.udpConn, s.udpTarget = nil, nil
+			s.mu.Unlock()
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nSession: test1234\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n", cseq)
 			_, _ = conn.Write([]byte(resp))
 
 		case "PLAY":
 			resp := fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: %s\r\nSession: test1234\r\n\r\n", cseq)
-			_, _ = conn.Write([]byte(resp))
-
-			if s.noVideo {
-				continue
+			if !s.earlyRTP {
+				_, _ = conn.Write([]byte(resp))
 			}
 
 			s.mu.Lock()
@@ -271,17 +279,22 @@ func (s *mockServer) handle(conn net.Conn) {
 			s.mu.Unlock()
 
 			for i, pkt := range s.packets {
-				if s.drop[i] {
+				if s.noVideo || s.drop[i] {
 					continue
 				}
 				if udpConn != nil && udpTarget != nil {
-					_, _ = udpConn.WriteTo(pkt, udpTarget)
+					if !s.udpSilent {
+						_, _ = udpConn.WriteTo(pkt, udpTarget)
+					}
 					continue
 				}
 				length := len(pkt)
 				frameHdr := []byte{0x24, 0x00, byte(length >> 8), byte(length)}
 				_, _ = conn.Write(frameHdr)
 				_, _ = conn.Write(pkt)
+			}
+			if s.earlyRTP {
+				_, _ = conn.Write([]byte(resp))
 			}
 
 		case "TEARDOWN":

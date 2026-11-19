@@ -104,6 +104,7 @@ func absInt(x int) int {
 
 func Deblock(f *Frame, sc *SliceContext) {
 	chromaQpOff := sc.ChromaQpIndexOffset
+	chromaQpOffCr := sc.SecondChromaQpIndexOffset
 
 	for mbIdx := 0; mbIdx < sc.TotalMBs; mbIdx++ {
 		mb := &sc.MBs[mbIdx]
@@ -130,15 +131,16 @@ func Deblock(f *Frame, sc *SliceContext) {
 		cy0 := mbY * 8
 
 		qpc := chromaQPForDeblock(qp, chromaQpOff)
+		qpcr := chromaQPForDeblock(qp, chromaQpOffCr)
 
 		if hasLeft {
 			qpLeft := sc.MBs[mbIdx-1].QPY
 			qpAvg := (qp + qpLeft + 1) >> 1
 			filterLumaIntraV(f.Y, f.StrideY, x0, y0, qpAvg+a, qpAvg+b)
 
-			qpcLeft := chromaQPForDeblock(qpLeft, chromaQpOff)
-			qpcAvg := (qpc + qpcLeft + 1) >> 1
+			qpcAvg := (qpc + chromaQPForDeblock(qpLeft, chromaQpOff) + 1) >> 1
 			filterChromaIntraV(f.Cb, f.StrideC, cx0, cy0, qpcAvg+a, qpcAvg+b)
+			qpcAvg = (qpcr + chromaQPForDeblock(qpLeft, chromaQpOffCr) + 1) >> 1
 			filterChromaIntraV(f.Cr, f.StrideC, cx0, cy0, qpcAvg+a, qpcAvg+b)
 		}
 
@@ -150,16 +152,16 @@ func Deblock(f *Frame, sc *SliceContext) {
 			filterLumaNormalV(f.Y, f.StrideY, x0+12, y0, qp+a, qp+b, 3)
 		}
 		filterChromaNormalV(f.Cb, f.StrideC, cx0+4, cy0, qpc+a, qpc+b, 3)
-		filterChromaNormalV(f.Cr, f.StrideC, cx0+4, cy0, qpc+a, qpc+b, 3)
+		filterChromaNormalV(f.Cr, f.StrideC, cx0+4, cy0, qpcr+a, qpcr+b, 3)
 
 		if hasTop {
 			qpTop := sc.MBs[mbIdx-sc.MBWidth].QPY
 			qpAvg := (qp + qpTop + 1) >> 1
 			filterLumaIntraH(f.Y, f.StrideY, x0, y0, qpAvg+a, qpAvg+b)
 
-			qpcTop := chromaQPForDeblock(qpTop, chromaQpOff)
-			qpcAvg := (qpc + qpcTop + 1) >> 1
+			qpcAvg := (qpc + chromaQPForDeblock(qpTop, chromaQpOff) + 1) >> 1
 			filterChromaIntraH(f.Cb, f.StrideC, cx0, cy0, qpcAvg+a, qpcAvg+b)
+			qpcAvg = (qpcr + chromaQPForDeblock(qpTop, chromaQpOffCr) + 1) >> 1
 			filterChromaIntraH(f.Cr, f.StrideC, cx0, cy0, qpcAvg+a, qpcAvg+b)
 		}
 
@@ -171,7 +173,7 @@ func Deblock(f *Frame, sc *SliceContext) {
 			filterLumaNormalH(f.Y, f.StrideY, x0, y0+12, qp+a, qp+b, 3)
 		}
 		filterChromaNormalH(f.Cb, f.StrideC, cx0, cy0+4, qpc+a, qpc+b, 3)
-		filterChromaNormalH(f.Cr, f.StrideC, cx0, cy0+4, qpc+a, qpc+b, 3)
+		filterChromaNormalH(f.Cr, f.StrideC, cx0, cy0+4, qpcr+a, qpcr+b, 3)
 	}
 }
 
